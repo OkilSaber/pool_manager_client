@@ -56,8 +56,9 @@ jobs:
             Paquets macOS (Apple Silicon et Intel) et Linux (.deb, .AppImage).
             Nécessite un serveur Pool Manager joignable — voir le README.
 
-            macOS : l'app n'est pas signée. Au premier lancement, clic droit → Ouvrir,
-            ou `xattr -dr com.apple.quarantine "/Applications/Pool Manager.app"`.
+            macOS : l'app est signée ad hoc mais pas notariée par Apple. Au premier lancement,
+            ouvrez Réglages Système → Confidentialité et sécurité → « Ouvrir quand même »,
+            ou lancez `xattr -dr com.apple.quarantine "/Applications/Pool Manager.app"`.
           releaseDraft: false
           prerelease: false
           args: --target ${{ matrix.target }}

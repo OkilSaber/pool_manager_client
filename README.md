@@ -79,7 +79,9 @@ un membre peut quitter un tableau (ses parts sont redistribuées pour rester à 
 
 Téléchargez le paquet de votre système dans les [Releases](https://github.com/OkilSaber/pool_manager_client/releases) :
 `.dmg` macOS (Apple Silicon `aarch64` ou Intel `x64`), `.deb` ou `.AppImage` Linux.
-L'app macOS n'est pas signée : au premier lancement, clic droit → **Ouvrir**.
+L'app macOS est signée ad hoc mais pas notariée par Apple : au premier lancement, ouvrez
+**Réglages Système → Confidentialité et sécurité → Ouvrir quand même**, ou dans un terminal :
+`xattr -dr com.apple.quarantine "/Applications/Pool Manager.app"`.
 
 Le client a besoin d'un [serveur Pool Manager](https://github.com/OkilSaber/pool_manager_server) joignable
 (sur votre machine ou le réseau local). Au premier lancement, renseignez son adresse dans

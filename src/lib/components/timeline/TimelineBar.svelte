@@ -1,5 +1,6 @@
 <!--
-  Barre d'une carte planifiée.
+  Barre d'une carte planifiée, ou part d'un assigné (carte à plusieurs personnes : une barre par personne,
+  avec son avatar ; déplacer une part change la date de début de cette personne seulement).
   Glisser pour replanifier : capture du pointeur, déplacement en transform seul (aucun recalcul de mise en page),
   aimanté au jour, bulle de dates au-dessus ; au relâchement la barre se pose en douceur à sa nouvelle place.
   Échap annule (retour immédiat : action clavier). Clavier : Entrée ouvre, ←/→ décale d'un jour ouvré (Maj : 5), sans animation.
@@ -9,6 +10,7 @@
   import { tick } from 'svelte';
   import Avatar from '$lib/components/Avatar.svelte';
   import { addWorkingDays, formatLong } from '$lib/dates';
+  import { fmtPct } from '$lib/format';
   import { reducedMotion } from '$lib/motion';
   import { priority } from '$lib/priority';
   import { board } from '$lib/stores/board.svelte';
@@ -16,14 +18,17 @@
     formatDayRange,
     HEADER_HEIGHT,
     LABEL_WIDTH,
+    laneBox,
     shiftSchedule,
     subWorkingDays,
     textWidth,
+    type Segment,
     type TimelineRow
   } from './timeline';
 
   let {
     row,
+    segment,
     rangeStart,
     rangeEnd,
     dayWidth,
@@ -34,6 +39,7 @@
     ondragstate
   }: {
     row: TimelineRow;
+    segment: Segment;
     rangeStart: number;
     rangeEnd: number;
     dayWidth: number;
@@ -56,23 +62,40 @@
   let el: HTMLDivElement;
 
   const card = $derived(row.card);
-  const left = $derived((row.start - rangeStart) * dayWidth);
-  const width = $derived((row.end - row.start + 1) * dayWidth);
+  const left = $derived((segment.start - rangeStart) * dayWidth);
+  const width = $derived((segment.end - segment.start + 1) * dayWidth);
+  const box = $derived(laneBox(segment.lane, row.lanes));
+  /** Part d'une carte à plusieurs assignés, sur la ligne de la carte : avatar de la personne (et son nom s'il tient). */
+  const split = $derived(row.split);
+  const person = $derived(segment.userId != null ? card.assignees.find((a) => a.user_id === segment.userId) : undefined);
+  const personName = $derived(segment.userId != null ? (board.member(segment.userId)?.display_name ?? 'Ancien membre') : '');
   const color = $derived(priority(card.priority).color);
   // Dans un pool, le liseré gauche (3 px) porte la couleur du projet ; le fond et le contour restent ceux de la priorité.
   // Barre trop étroite (zoom « Mois ») : le liseré la mangerait, on garde la priorité seule.
   const project = $derived(board.kind === 'pool' ? board.projectOf(card.project_id) : undefined);
   const stripe = $derived(project && width >= 12 ? project.color : null);
   const ref = $derived(board.cardKey(card));
-  const people = $derived(card.assignees.slice(0, 3));
-  const extra = $derived(card.assignees.length - people.length);
+  // Ligne d'une personne (regroupement par assigné) : son seul avatar ; sinon ceux de la carte.
+  const people = $derived(person && !split ? [person] : card.assignees.slice(0, 3));
+  const extra = $derived(person && !split ? 0 : card.assignees.length - people.length);
   const avatarsWidth = $derived(people.length ? 16 + (people.length - 1) * 13 + (extra > 0 ? 19 : 0) + 6 : 0);
+  /** Avatar d'une part : 16 px sur une rangée pleine, à la hauteur de la rangée quand les parts s'empilent. */
+  const avatarSize = $derived(row.lanes > 1 ? Math.max(8, Math.min(14, box.height)) : 16);
   // Titre dans la barre s'il y tient (ou si la barre est assez large pour un début lisible), sinon à droite.
-  const inside = $derived(width >= Math.min(textWidth(card.title) + 18, 88) + avatarsWidth);
+  // Part d'une carte : avatar (et prénom sur une rangée pleine) dedans s'il tient, sinon juste après.
+  const inside = $derived(
+    split ? width >= avatarSize + 10 : width >= Math.min(textWidth(card.title) + 18, 88) + avatarsWidth
+  );
+  const showName = $derived(split && row.lanes === 1 && width >= avatarSize + textWidth(personName) + 22);
+  const when = $derived(
+    segment.start === segment.end
+      ? `le ${formatLong(segment.start)}`
+      : `du ${formatLong(segment.start)} au ${formatLong(segment.end)}`
+  );
   const ariaLabel = $derived(
-    row.start === row.end
-      ? `${ref} ${card.title}, le ${formatLong(row.start)}`
-      : `${ref} ${card.title}, du ${formatLong(row.start)} au ${formatLong(row.end)}`
+    person
+      ? `${ref} ${card.title}, part de ${personName} (${fmtPct(Math.round(person.pct * 100) / 100)}), ${when}`
+      : `${ref} ${card.title}, ${when}`
   );
 
   // ---------- Drag ----------
@@ -91,7 +114,7 @@
   let moved = $state(false);
   let delta = $state(0);
   let pillBelow = $state(false);
-  const preview = $derived(moved ? shiftSchedule(row.start, row.workingDays, delta) : null);
+  const preview = $derived(moved ? shiftSchedule(segment.start, segment.workingDays, delta) : null);
 
   function snapMs(): number {
     // Aimanter par pas de 40 px est sec : un très court ease-out lisse les pas (transition CSS, interruptible).
@@ -144,7 +167,7 @@
       begin();
     }
     const raw = Math.round((lastX - originX + scrolled) / dayWidth);
-    const d = Math.max(rangeStart - row.start, Math.min(rangeEnd - row.end, raw));
+    const d = Math.max(rangeStart - segment.start, Math.min(rangeEnd - segment.end, raw));
     if (d !== delta) {
       delta = d;
       el.style.transform = `translateX(${d * dayWidth}px)`;
@@ -215,13 +238,13 @@
     if (e.pointerId !== pointerId) return;
     const wasMoved = moved;
     const d = delta;
-    const origin = row.start;
+    const origin = segment.start;
     finish();
     if (!wasMoved) {
       onopen();
       return;
     }
-    const target = shiftSchedule(origin, row.workingDays, d);
+    const target = shiftSchedule(origin, segment.workingDays, d);
     // Lâchée sur le week-end qui précède son début : même jour ouvré, rien à enregistrer.
     if (d === 0 || target.start === origin) {
       returnHome(true);
@@ -232,7 +255,7 @@
     // Mise à jour optimiste synchrone : après tick() la barre a son nouveau `left`.
     await tick();
     if (!el?.isConnected) return;
-    settleFrom((origin + d - row.start) * dayWidth);
+    settleFrom((origin + d - segment.start) * dayWidth);
     // Un réordonnancement de la liste déplace le nœud dans le DOM et lui fait perdre le focus (←/→ juste après).
     if (hadFocus && document.activeElement !== el) el.focus({ preventScroll: true });
   }
@@ -285,7 +308,7 @@
     if ((e.key !== 'ArrowLeft' && e.key !== 'ArrowRight') || e.altKey || e.metaKey || e.ctrlKey) return;
     e.preventDefault();
     const n = e.shiftKey ? 5 : 1;
-    const start = e.key === 'ArrowRight' ? addWorkingDays(row.start, n) : subWorkingDays(row.start, n);
+    const start = e.key === 'ArrowRight' ? addWorkingDays(segment.start, n) : subWorkingDays(segment.start, n);
     el.style.transition = 'none';
     el.style.transform = '';
     onmove(start, true);
@@ -302,9 +325,13 @@
   class="bar"
   class:dragging={moved}
   class:outside={!inside}
+  class:split
+  class:stacked={row.lanes > 1}
   data-card-id={card.id}
   style:left="{left}px"
   style:width="{width}px"
+  style:top="{box.top}px"
+  style:height="{box.height}px"
   style:--c={color}
   style:--stripe={stripe}
   role="button"
@@ -321,7 +348,13 @@
   {onpointerleave}
   {onkeydown}
 >
-  {#if inside}
+  {#if split}
+    {#if inside}
+      {@render own()}
+    {:else}
+      <span class="out" aria-hidden="true">{@render own()}</span>
+    {/if}
+  {:else if inside}
     <span class="title">{card.title}</span>
     {@render avatars()}
   {:else}
@@ -336,6 +369,15 @@
     </span>
   {/if}
 </div>
+
+{#snippet own()}
+  {#if segment.userId != null}
+    <span class="people">
+      <Avatar id={segment.userId} name={personName} size={avatarSize} ring={row.lanes > 1} />
+    </span>
+    {#if showName}<span class="title">{personName}</span>{/if}
+  {/if}
+{/snippet}
 
 {#snippet avatars()}
   {#if people.length}
@@ -354,12 +396,10 @@
   .bar {
     --fill: 16%;
     position: absolute;
-    top: 6px;
     z-index: 1;
     display: flex;
     align-items: center;
     gap: 6px;
-    height: 24px;
     padding: 0 4px 0 9px;
     border-radius: var(--radius-sm);
     /* Fond opaque (mélangé à la surface) : la grille ne transparaît pas ; liseré plein à gauche. */
@@ -384,6 +424,28 @@
   }
 
   .bar.outside {
+    padding: 0;
+  }
+
+  /* Part d'un assigné : avatar en tête, juste après le liseré. */
+  .bar.split {
+    gap: 5px;
+    padding: 0 4px 0 6px;
+  }
+
+  /* Parts empilées : rangées fines, rayon réduit ; la cible ne déborde pas sur la rangée voisine. */
+  .bar.stacked {
+    padding-left: 5px;
+    border-radius: 3px;
+  }
+
+  .bar.stacked::before {
+    inset: -1px -4px;
+  }
+
+  /* Part trop étroite pour son avatar : il passe juste après (aucun retrait qui élargirait la barre). */
+  .bar.split.outside,
+  .bar.stacked.outside {
     padding: 0;
   }
 

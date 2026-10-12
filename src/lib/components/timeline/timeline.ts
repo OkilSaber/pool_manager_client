@@ -18,6 +18,7 @@ import {
 import type { Card } from '$lib/types/Card';
 import type { Member } from '$lib/types/Member';
 import type { Project } from '$lib/types/Project';
+import type { Schedule } from '$lib/types/Schedule';
 import type { State } from '$lib/types/State';
 
 // ---------- Réglages ----------
@@ -209,15 +210,35 @@ export function ticks(range: Range, zoom: Zoom, dayWidth: number, todayDay: numb
 
 // ---------- Lignes & groupes ----------
 
+/**
+ * Barre posée sur une ligne : la carte entière, ou la part d'un assigné (carte à plusieurs personnes).
+ * Déplacer une part change la date de début de cette personne ; déplacer la carte, celle de la carte.
+ */
+export interface Segment {
+  key: string;
+  /** Assigné dont la date bouge quand on déplace la barre ; null = la date de la carte */
+  userId: number | null;
+  start: number;
+  end: number;
+  workingDays: number;
+  /** Rangée dans la ligne (parts qui se chevauchent : empilées), de 0 à `lanes - 1` */
+  lane: number;
+}
+
 export interface TimelineRow {
   /** Clé unique dans la vue (une carte peut apparaître dans plusieurs groupes « Assigné ») */
   key: string;
   card: Card;
+  /** Étendue de la ligne (tri, étendue des groupes) */
   start: number;
   end: number;
-  workingDays: number;
   /** Part de la personne du groupe (regroupement par assigné), sinon null */
   pct: number | null;
+  segments: Segment[];
+  /** Une barre par assigné (avatar par barre) plutôt qu'une barre pour la carte */
+  split: boolean;
+  /** Nombre de rangées nécessaires pour que les parts ne se chevauchent pas */
+  lanes: number;
 }
 
 export interface TimelineGroup {
@@ -236,11 +257,64 @@ export interface TimelineGroup {
   spanEnd: number | null;
 }
 
+function span(s: Schedule | null): { start: number; end: number; workingDays: number } | null {
+  const a = toDay(s?.start);
+  const b = toDay(s?.end);
+  if (a == null || b == null || !s) return null;
+  return { start: a, end: Math.max(a, b), workingDays: s.working_days };
+}
+
+/**
+ * Ligne d'une carte. Plusieurs assignés : une part par personne, chacune à ses dates (empilées si elles se
+ * chevauchent). Sinon une seule barre ; avec un seul assigné qui a sa propre date, la déplacer change cette date
+ * (celle de la carte ne la ferait pas bouger).
+ */
 function scheduledRow(card: Card, key: string, pct: number | null): TimelineRow | null {
-  const s = toDay(card.schedule?.start);
-  const e = toDay(card.schedule?.end);
-  if (s == null || e == null || !card.schedule) return null;
-  return { key, card, start: s, end: Math.max(e, s), workingDays: card.schedule.working_days, pct };
+  const whole = span(card.schedule);
+  if (!whole) return null;
+  if (card.assignees.length < 2) {
+    const only = card.assignees[0];
+    const userId = only?.start_date ? only.user_id : null;
+    return { key, card, start: whole.start, end: whole.end, pct, segments: [{ key: 'card', userId, lane: 0, ...whole }], split: false, lanes: 1 };
+  }
+  const segments: Segment[] = [];
+  for (const a of card.assignees) {
+    const s = span(a.schedule);
+    if (s) segments.push({ key: `a${a.user_id}`, userId: a.user_id, lane: 0, ...s });
+  }
+  if (!segments.length) return null;
+  const lanes = assignLanes(segments);
+  return { key, card, start: whole.start, end: whole.end, pct, segments, split: true, lanes };
+}
+
+/** Ligne d'une personne (regroupement par assigné) pour une carte à plusieurs assignés : sa seule part. */
+function personRow(card: Card, userId: number, key: string): TimelineRow | null {
+  const a = card.assignees.find((x) => x.user_id === userId);
+  const s = a ? span(a.schedule) : null;
+  if (!a || !s) return null;
+  return { key, card, start: s.start, end: s.end, pct: a.pct, segments: [{ key: `a${userId}`, userId, lane: 0, ...s }], split: false, lanes: 1 };
+}
+
+/** Rangées des parts (premier arrivé, première rangée libre) ; renvoie leur nombre. */
+function assignLanes(segments: Segment[]): number {
+  const ends: number[] = [];
+  const order = [...segments].sort((a, b) => a.start - b.start || b.end - a.end || (a.userId ?? 0) - (b.userId ?? 0));
+  for (const s of order) {
+    let lane = ends.findIndex((e) => e < s.start);
+    if (lane < 0) lane = ends.length;
+    ends[lane] = s.end;
+    s.lane = lane;
+  }
+  return Math.max(1, ends.length);
+}
+
+/** Hauteur et position verticale (px) d'une barre dans une ligne de ROW_HEIGHT, selon sa rangée. */
+export function laneBox(lane: number, lanes: number): { top: number; height: number } {
+  if (lanes <= 1) return { top: 6, height: 24 };
+  const gap = 2;
+  const height = Math.max(4, Math.floor((26 - (lanes - 1) * gap) / lanes));
+  const used = lanes * height + (lanes - 1) * gap;
+  return { top: Math.round((ROW_HEIGHT - used) / 2) + lane * (height + gap), height };
 }
 
 function byStart(a: TimelineRow, b: TimelineRow): number {
@@ -341,7 +415,8 @@ export function buildGroups(
       continue;
     }
     for (const a of c.assignees) {
-      const r = scheduledRow(c, `u${a.user_id}:${c.id}`, a.pct);
+      const key = `u${a.user_id}:${c.id}`;
+      const r = c.assignees.length > 1 ? personRow(c, a.user_id, key) : scheduledRow(c, key, a.pct);
       if (!r) continue;
       const list = byUser.get(a.user_id);
       if (list) list.push(r);

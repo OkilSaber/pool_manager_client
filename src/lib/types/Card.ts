@@ -20,6 +20,8 @@ estimate_days: number | null,
  */
 start_date: string | null, position: number, created_by: number, created_at: string, updated_at: string, assignees: Array<Assignee>, 
 /**
- * Planification calculée (absente si pas de date de début ou de chiffrage)
+ * Planification agrégée : sans assigné, tout le chiffrage depuis `start_date` ;
+ * avec assignés, du plus tôt de leurs débuts à la plus tardive de leurs fins
+ * (absente si rien n'est planifiable)
  */
 schedule: Schedule | null, };

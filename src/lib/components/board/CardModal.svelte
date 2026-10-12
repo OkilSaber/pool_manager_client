@@ -21,6 +21,7 @@
   import type { UpdateCard } from '$lib/types/UpdateCard';
   import { lastProject, rememberProject } from '$lib/components/projects/project';
   import AssigneeEditor from './AssigneeEditor.svelte';
+  import { formatDayRange } from '$lib/components/timeline/timeline';
   import { autosize } from './autosize';
   import { fmtCreated, fmtWorkingDays, parseEstimate } from '$lib/format';
   import { tooltip } from '$lib/tooltip';
@@ -381,7 +382,10 @@
     return typeof v === 'number' ? v : null;
   });
   /** Planification : celle de la carte, ou un aperçu du brouillon (sans assignés : une personne à 100 %). */
-  const schedule = $derived(card ? card.schedule : computeSchedule(vStart, vEstimate, []));
+  const schedule = $derived(card ? card.schedule : computeSchedule(vStart, vEstimate));
+  /** Plusieurs assignés : chacun peut avoir sa date ; celle de la carte n'est plus qu'une valeur par défaut. */
+  const multi = $derived((card?.assignees.length ?? 0) >= 2);
+  const spanStart = $derived(schedule ? toDay(schedule.start) : null);
 
   const column = $derived(vState != null ? board.states.find((s) => s.id === vState) : undefined);
   const project = $derived(card ? board.projectOf(card.project_id) : targetProject != null ? board.projectOf(targetProject) : undefined);
@@ -391,7 +395,7 @@
   );
   const author = $derived(card ? board.member(card.created_by)?.display_name : undefined);
   const end = $derived(schedule ? toDay(schedule.end) : null);
-  const shiftedStart = $derived(schedule && vStart && schedule.start !== vStart ? toDay(schedule.start) : null);
+  const shiftedStart = $derived(!multi && schedule && vStart && schedule.start !== vStart ? toDay(schedule.start) : null);
   const missing = $derived.by(() => {
     if (schedule) return '';
     const noStart = !vStart;
@@ -568,13 +572,14 @@
         </div>
 
         <div class="field">
-          <label class="label" for="{uid}-start">Date de début</label>
+          <label class="label" for="{uid}-start">{multi ? 'Date de début par défaut' : 'Date de début'}</label>
           <div class="date-row">
             <input
               bind:this={startInput}
               id="{uid}-start"
               class="input num"
               type="date"
+              aria-describedby={multi ? `${uid}-start-hint` : undefined}
               value={vStart ?? ''}
               onchange={(e) => setStart(e.currentTarget.value)}
               onblur={(e) => {
@@ -596,15 +601,25 @@
               </button>
             {/if}
           </div>
+          {#if multi}
+            <span class="sub" id="{uid}-start-hint">Chaque assigné peut avoir sa propre date</span>
+          {/if}
         </div>
 
         <div class="end" class:empty={!schedule}>
           <span class="label">Fin prévue</span>
           {#if schedule && end != null}
-            <p class="end-date num">
-              <strong>{formatLong(end)}</strong>
-              <span class="muted">· {fmtWorkingDays(schedule.working_days)}</span>
-            </p>
+            {#if multi && spanStart != null && spanStart !== end}
+              <p class="end-date num">
+                <strong>{formatDayRange(spanStart, end)}</strong>
+              </p>
+              <p class="end-note num">{fmtWorkingDays(schedule.working_days)}, du premier début à la dernière fin</p>
+            {:else}
+              <p class="end-date num">
+                <strong>{formatLong(end)}</strong>
+                <span class="muted">· {fmtWorkingDays(schedule.working_days)}</span>
+              </p>
+            {/if}
             {#if shiftedStart != null}
               <p class="end-note">Début décalé au {formatLong(shiftedStart)} (week-end).</p>
             {/if}

@@ -8,8 +8,9 @@
 
 import { untrack } from 'svelte';
 import { api, ApiError } from '$lib/api';
-import { computeSchedule } from '$lib/dates';
+import { byShare, DEFAULT_OCCUPANCY, withSchedules } from '$lib/dates';
 import type { Assignee } from '$lib/types/Assignee';
+import type { AssigneeInput } from '$lib/types/AssigneeInput';
 import type { Card } from '$lib/types/Card';
 import type { CreateCard } from '$lib/types/CreateCard';
 import type { CreateProject } from '$lib/types/CreateProject';
@@ -36,25 +37,31 @@ export function positionBetween(prev?: number, next?: number): number {
 }
 
 /**
- * Miroir de `renormalize` (crates/server/src/scope.rs) : parts restantes ramenées à 100 %
- * après le retrait d'un assigné, par la méthode du plus fort reste (à égalité : plus grosse part, puis plus
- * petit id). Liste vide ou totalisant déjà 100 : inchangée. Ordre du serveur : part décroissante, puis id.
+ * Miroir de `renormalize` (server/crates/server/src/scope.rs) : parts restantes ramenées à 100 % après le retrait
+ * d'un assigné, par mise à l'échelle proportionnelle (la dernière, dans l'ordre du serveur, absorbe l'arrondi).
+ * Occupation et date de début conservées. Liste vide ou totalisant déjà 100 : inchangée. Planifications à recalculer.
  */
 function renormalize(rest: Assignee[]): Assignee[] {
-  const total = rest.reduce((sum, a) => sum + a.pct, 0);
-  if (total < 1 || total >= 100) return rest;
-  const shares = rest.map((a) => ({
-    user_id: a.user_id,
-    pct: Math.floor((a.pct * 100) / total),
-    rem: (a.pct * 100) % total,
-    orig: a.pct
-  }));
-  const missing = 100 - shares.reduce((sum, s) => sum + s.pct, 0);
-  [...shares]
-    .sort((a, b) => b.rem - a.rem || b.orig - a.orig || a.user_id - b.user_id)
-    .slice(0, missing)
-    .forEach((s) => s.pct++);
-  return shares.map(({ user_id, pct }) => ({ user_id, pct })).sort((a, b) => b.pct - a.pct || a.user_id - b.user_id);
+  const sorted = [...rest].sort(byShare);
+  const total = sorted.reduce((sum, a) => sum + a.pct, 0);
+  if (!sorted.length || !(Number.isFinite(total) && total > 0) || Math.abs(total - 100) < 1e-9) return sorted;
+  const shares = sorted.map((a) => ({ ...a, pct: (a.pct * 100) / total }));
+  const others = shares.slice(0, -1).reduce((sum, a) => sum + a.pct, 0);
+  shares[shares.length - 1].pct = Math.min(100, Math.max(Number.MIN_VALUE, 100 - others));
+  return shares.sort(byShare);
+}
+
+/** Assignés tels que le serveur les enregistre (sans date propre vide, occupation par défaut), planifications à recalculer. */
+function fromInput(list: AssigneeInput[]): Assignee[] {
+  return list
+    .map((a) => ({
+      user_id: a.user_id,
+      pct: a.pct,
+      occupancy: a.occupancy ?? DEFAULT_OCCUPANCY,
+      start_date: a.start_date?.trim() || null,
+      schedule: null
+    }))
+    .sort(byShare);
 }
 
 export interface ScopeRef {
@@ -273,8 +280,7 @@ class BoardStore {
     if (patch.priority !== undefined) optimistic.priority = patch.priority;
     if (patch.estimate_days !== undefined) optimistic.estimate_days = patch.estimate_days;
     if (patch.start_date !== undefined) optimistic.start_date = patch.start_date;
-    optimistic.schedule = computeSchedule(optimistic.start_date, optimistic.estimate_days, optimistic.assignees.map((a) => a.pct));
-    this.replaceCard(optimistic);
+    this.replaceCard(withSchedules(optimistic));
     const { seq, done } = this.enqueue(id, () => api.updateCard(id, patch));
     try {
       const saved = await done;
@@ -297,28 +303,30 @@ class BoardStore {
     }
   }
 
-  async setAssignees(id: number, assignees: Assignee[]): Promise<boolean> {
-    const { seq, done } = this.enqueue(id, () => api.setAssignees(id, assignees));
+  /**
+   * Remplace les assignés d'une carte (parts en pleine précision, total 100). Optimiste : les planifications
+   * de chacun et celle de la carte sont recalculées tout de suite ; en cas d'échec, la carte revient en arrière.
+   */
+  async setAssignees(id: number, list: AssigneeInput[]): Promise<boolean> {
+    const before = this.card(id);
+    if (!before) return false;
+    const snapshot = $state.snapshot(before) as Card;
+    this.replaceCard(withSchedules({ ...snapshot, assignees: fromInput(list) }));
+    const { seq, done } = this.enqueue(id, () => api.setAssignees(id, list));
     try {
       const saved = await done;
       if (this.isLatest(id, seq)) {
         this.cardStale.delete(id);
         this.replaceCard(saved);
-      } else {
-        // Une modification plus récente est en file (sa réponse fera foi) : on reflète déjà la répartition.
-        const current = this.card(id);
-        if (current) {
-          const pcts = saved.assignees.map((a) => a.pct);
-          this.replaceCard({
-            ...($state.snapshot(current) as Card),
-            assignees: saved.assignees,
-            schedule: computeSchedule(current.start_date, current.estimate_days, pcts)
-          });
-        }
       }
       return true;
     } catch (e) {
-      if (this.isLatest(id, seq) && this.cardStale.delete(id)) void this.resync(id);
+      if (this.isLatest(id, seq)) {
+        this.replaceCard(snapshot);
+        if (this.cardStale.delete(id)) void this.resync(id);
+      } else {
+        this.cardStale.add(id);
+      }
       toast.error(e);
       return false;
     }
@@ -491,8 +499,9 @@ class BoardStore {
       this.detail.members = this.detail.members.filter((m) => m.user_id !== userId);
       for (const c of this.detail.cards) {
         if (c.assignees.some((a) => a.user_id === userId)) {
-          c.assignees = renormalize(c.assignees.filter((a) => a.user_id !== userId));
-          c.schedule = computeSchedule(c.start_date, c.estimate_days, c.assignees.map((a) => a.pct));
+          const next = withSchedules({ ...($state.snapshot(c) as Card), assignees: renormalize(c.assignees.filter((a) => a.user_id !== userId)) });
+          c.assignees = next.assignees;
+          c.schedule = next.schedule;
         }
       }
       return true;

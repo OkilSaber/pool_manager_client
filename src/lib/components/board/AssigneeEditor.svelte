@@ -1,24 +1,52 @@
 <!--
-  Assignés d'une carte et répartition de la charge (en %).
-  Enregistre automatiquement dès que la liste est vide ou totalise exactement 100 %
-  (anti-rebond pendant la frappe) ; une répartition invalide n'est jamais envoyée.
+  Assignés d'une carte : répartition de la charge (en % ou en j/h, le chiffrage de la carte faisant foi),
+  occupation (% du temps de chacun) et date de début propre (vide : celle de la carte).
+  Enregistre automatiquement dès que la liste est vide ou valide (total à 100 % à 0,01 près, occupations 1–100),
+  avec anti-rebond pendant la frappe ; une répartition invalide n'est jamais envoyée.
+  Les parts partent en pleine précision (ex. 200/7) : arrondies, le ceil() côté serveur pourrait ajouter un jour.
 -->
 <script lang="ts">
   import { untrack } from 'svelte';
   import Avatar from '$lib/components/Avatar.svelte';
-  import { computeSchedule, formatLong, toDay, workingDays } from '$lib/dates';
+  import {
+    assigneeSchedule,
+    cardSchedule,
+    computeSchedule,
+    DEFAULT_OCCUPANCY,
+    formatLong,
+    toDay
+  } from '$lib/dates';
   import { board } from '$lib/stores/board.svelte';
   import { session } from '$lib/stores/session.svelte';
   import { toast } from '$lib/stores/toast.svelte';
   import type { Assignee } from '$lib/types/Assignee';
+  import type { AssigneeInput } from '$lib/types/AssigneeInput';
   import type { Card } from '$lib/types/Card';
-  import { fmtPct, fmtWorkingDays, NNBSP } from '$lib/format';
+  import type { Schedule } from '$lib/types/Schedule';
+  import { fmtEstimate, fmtNum, fmtPct, fmtWorkingDays, NNBSP } from '$lib/format';
+  import { formatDay, formatDayRange } from '$lib/components/timeline/timeline';
   import Popover from './Popover.svelte';
   import { tooltip } from '$lib/tooltip';
 
   let { card, onsaved }: { card: Card; onsaved?: () => void } = $props();
 
-  type Row = { user_id: number; pct: number | null };
+  type Unit = 'pct' | 'jh';
+  type Row = {
+    user_id: number;
+    /** Part en pourcentage, pleine précision ; null si la saisie n'est pas un nombre */
+    pct: number | null;
+    /** Occupation (% du temps), entier 1–100 attendu ; null si vide */
+    occupancy: number | null;
+    /** Date de début propre ; null = celle de la carte */
+    start_date: string | null;
+    /** Texte en cours de saisie de la part (affiché tel quel jusqu'à la sortie du champ) */
+    entry: string | null;
+  };
+
+  /** Écart toléré sur le total (comme le serveur). */
+  const TOLERANCE = 0.01;
+  const EPS = 1e-9;
+  const UNIT_KEY = 'pm.assignees.unit';
 
   const uid = $props.id();
   const addMenuId = `assign-add-${uid}`;
@@ -29,12 +57,43 @@
   let syncedFor = -1;
   let timer: ReturnType<typeof setTimeout> | undefined;
 
+  // ---------- Unité de saisie ----------
+
+  function readUnit(): Unit {
+    try {
+      return localStorage.getItem(UNIT_KEY) === 'jh' ? 'jh' : 'pct';
+    } catch {
+      return 'pct';
+    }
+  }
+
+  let unitPref = $state<Unit>(readUnit());
+  /** Chiffrage de référence (> 0) ; sans lui, la saisie en j/h n'a pas de sens. */
+  const estimate = $derived(card.estimate_days != null && card.estimate_days > 0 ? card.estimate_days : null);
+  const unit = $derived<Unit>(unitPref === 'jh' && estimate != null ? 'jh' : 'pct');
+
+  function setUnit(next: Unit) {
+    if (next === 'jh' && estimate == null) return;
+    unitPref = next;
+    try {
+      localStorage.setItem(UNIT_KEY, next);
+    } catch {
+      /* stockage indisponible : le choix ne sera pas retenu */
+    }
+    // Les saisies en cours étaient dans l'autre unité : on réaffiche les valeurs.
+    for (const r of rows) r.entry = null;
+  }
+
+  // ---------- Synchronisation avec la carte ----------
+
+  function toRow(a: Assignee): Row {
+    return { user_id: a.user_id, pct: a.pct, occupancy: a.occupancy, start_date: a.start_date, entry: null };
+  }
+
   /** Réaligne sur le serveur en gardant l'ordre affiché (le serveur trie par part décroissante). */
   function orderLike(current: Row[], server: Assignee[]): Row[] {
     const rank = new Map(current.map((r, i) => [r.user_id, i]));
-    return server
-      .map((a) => ({ user_id: a.user_id, pct: a.pct }))
-      .sort((a, b) => (rank.get(a.user_id) ?? Infinity) - (rank.get(b.user_id) ?? Infinity));
+    return server.map(toRow).sort((a, b) => (rank.get(a.user_id) ?? Infinity) - (rank.get(b.user_id) ?? Infinity));
   }
 
   $effect.pre(() => {
@@ -55,44 +114,108 @@
       }
       syncedFor = id;
       dirty = false;
-      rows = server.map((a) => ({ user_id: a.user_id, pct: a.pct }));
+      rows = server.map(toRow);
     } else if (!dirty) {
       rows = orderLike(untrack(() => $state.snapshot(rows)) as Row[], server);
     }
   });
 
-  const total = $derived(rows.reduce((s, r) => s + (r.pct ?? 0), 0));
-  const rowsValid = $derived(rows.every((r) => r.pct != null && Number.isInteger(r.pct) && r.pct >= 1 && r.pct <= 100));
-  const valid = $derived(rows.length === 0 || (rowsValid && total === 100));
-  const available = $derived(board.members.filter((m) => !rows.some((r) => r.user_id === m.user_id)));
+  // ---------- Validation ----------
 
-  // Effet de la répartition sur la durée (aperçu en direct, même avant enregistrement).
-  const pcts = $derived(rows.map((r) => r.pct ?? 0));
-  const duration = $derived(workingDays(card.estimate_days, pcts));
-  const schedule = $derived(computeSchedule(card.start_date, card.estimate_days, pcts));
-  const maxShare = $derived(rows.length ? Math.max(...pcts) : 100);
+  const shareOk = (pct: number | null): pct is number => pct != null && Number.isFinite(pct) && pct > 0 && pct <= 100 + EPS;
+  const occupancyOk = (o: number | null): o is number => o != null && Number.isInteger(o) && o >= 1 && o <= 100;
+
+  const total = $derived(rows.reduce((s, r) => s + (r.pct ?? 0), 0));
+  const sharesOk = $derived(rows.every((r) => shareOk(r.pct)));
+  const totalOk = $derived(Math.abs(total - 100) <= TOLERANCE + EPS);
+  const occupanciesOk = $derived(rows.every((r) => occupancyOk(r.occupancy)));
+  const valid = $derived(rows.length === 0 || (sharesOk && totalOk && occupanciesOk));
+  const available = $derived(board.members.filter((m) => !rows.some((r) => r.user_id === m.user_id)));
 
   function name(userId: number): string {
     return board.member(userId)?.display_name ?? 'Membre retiré';
   }
 
-  // ---------- Enregistrement ----------
+  // ---------- Affichage des parts ----------
 
-  function same(a: { user_id: number; pct: number | null }[], b: { user_id: number; pct: number | null }[]): boolean {
-    if (a.length !== b.length) return false;
-    const m = new Map(b.map((x) => [x.user_id, x.pct]));
-    return a.every((x) => m.get(x.user_id) === x.pct);
+  const inputFmt = new Intl.NumberFormat('fr-FR', { maximumFractionDigits: 2, useGrouping: false });
+
+  /** Valeur affichée d'une part dans l'unité courante (2 décimales au plus). */
+  function shown(r: Row): string {
+    if (r.entry != null) return r.entry;
+    if (r.pct == null) return '';
+    return inputFmt.format(unit === 'jh' && estimate != null ? (estimate * r.pct) / 100 : r.pct);
   }
 
-  /** Liste envoyable au serveur (vide, ou parts entières 1–100 totalisant 100), sinon null. */
-  function payloadOf(list: Row[]): Assignee[] | null {
+  /** Saisie décimale libre (virgule ou point, espaces ignorés) ; null si vide ou invalide. */
+  function parseDecimal(raw: string): number | null {
+    const s = raw.replace(/\s/g, '').replace(',', '.');
+    if (s === '') return null;
+    const n = Number(s);
+    return Number.isFinite(n) ? n : null;
+  }
+
+  /** Total en j/h (2 décimales), pour la ligne « Total : 8 / 10 j/h ». */
+  const totalDays = $derived(estimate != null ? Math.round(((estimate * total) / 100) * 100) / 100 : 0);
+
+  // ---------- Planification par assigné (aperçu en direct, même avant enregistrement) ----------
+
+  function rowSchedule(r: Row): Schedule | null {
+    if (!shareOk(r.pct) || !occupancyOk(r.occupancy)) return null;
+    return assigneeSchedule(card.start_date, r.start_date, card.estimate_days, Math.min(r.pct, 100), r.occupancy);
+  }
+
+  function rowHint(r: Row): string {
+    if (estimate == null) return 'Sans chiffrage';
+    if (!r.start_date && !card.start_date) return 'Sans date de début';
+    if (!shareOk(r.pct) || !occupancyOk(r.occupancy)) return 'Valeurs à corriger';
+    return 'Non planifiable';
+  }
+
+  const schedules = $derived(rows.map(rowSchedule));
+  const aggregate = $derived(
+    rows.length ? cardSchedule(card.start_date, card.estimate_days, schedules) : computeSchedule(card.start_date, card.estimate_days)
+  );
+
+  // ---------- Enregistrement ----------
+
+  function same(a: AssigneeInput[], b: Assignee[]): boolean {
+    if (a.length !== b.length) return false;
+    const m = new Map(b.map((x) => [x.user_id, x]));
+    return a.every((x) => {
+      const y = m.get(x.user_id);
+      return (
+        !!y &&
+        Math.abs(y.pct - x.pct) < EPS &&
+        y.occupancy === (x.occupancy ?? DEFAULT_OCCUPANCY) &&
+        (y.start_date ?? null) === (x.start_date ?? null)
+      );
+    });
+  }
+
+  /**
+   * Liste envoyable au serveur (vide, ou valide), sinon null. Parts en pleine précision ; un écart de total
+   * dans la tolérance est absorbé par la dernière part, pour que la répartition couvre exactement le chiffrage.
+   */
+  function payloadOf(list: Row[]): AssigneeInput[] | null {
     if (list.length === 0) return [];
     let sum = 0;
     for (const r of list) {
-      if (r.pct == null || !Number.isInteger(r.pct) || r.pct < 1 || r.pct > 100) return null;
+      if (!shareOk(r.pct) || !occupancyOk(r.occupancy)) return null;
       sum += r.pct;
     }
-    return sum === 100 ? list.map((r) => ({ user_id: r.user_id, pct: r.pct as number })) : null;
+    if (Math.abs(sum - 100) > TOLERANCE + EPS) return null;
+    const out: AssigneeInput[] = list.map((r) => ({
+      user_id: r.user_id,
+      pct: Math.min(r.pct as number, 100),
+      occupancy: r.occupancy as number,
+      ...(r.start_date ? { start_date: r.start_date } : {})
+    }));
+    const last = out[out.length - 1];
+    const others = sum - last.pct;
+    const absorbed = 100 - others;
+    if (Math.abs(absorbed - last.pct) > EPS && absorbed > 0 && absorbed <= 100) last.pct = absorbed;
+    return out;
   }
 
   function queue(delay: number) {
@@ -116,8 +239,30 @@
     if (id !== card.id) return;
     if (ok) onsaved?.();
     // Rien n'a bougé pendant la requête : on se réaligne sur le store — la réponse serveur en cas de succès,
-    // la répartition enregistrée en cas d'échec (sinon l'écran montrerait une répartition « valide » jamais enregistrée).
-    if (same(rows, payload)) dirty = false;
+    // la répartition d'avant en cas d'échec (sinon l'écran montrerait une répartition « valide » jamais enregistrée).
+    const now = payloadOf(rows);
+    if (now && sameInputs(now, payload)) dirty = false;
+  }
+
+  function sameInputs(a: AssigneeInput[], b: AssigneeInput[]): boolean {
+    return (
+      a.length === b.length &&
+      a.every(
+        (x, i) =>
+          x.user_id === b[i].user_id &&
+          Math.abs(x.pct - b[i].pct) < EPS &&
+          x.occupancy === b[i].occupancy &&
+          (x.start_date ?? null) === (b[i].start_date ?? null)
+      )
+    );
+  }
+
+  function invalidReason(): string {
+    if (!sharesOk || !totalOk)
+      return estimate != null && unit === 'jh'
+        ? `la répartition doit totaliser le chiffrage (${fmtEstimate(estimate)})`
+        : `le total doit faire 100${NNBSP}%`;
+    return `l’occupation doit être entre 1 et 100${NNBSP}%`;
   }
 
   // Modale fermée pendant l'anti-rebond : on enregistre quand même ce qui est valide,
@@ -127,43 +272,42 @@
       clearTimeout(timer);
       save();
     }
-    if (dirty && !payloadOf(rows) && board.card(card.id)) toast.info(`Répartition non enregistrée${NNBSP}: le total doit faire 100${NNBSP}%.`);
+    if (dirty && !payloadOf(rows) && board.card(card.id)) toast.info(`Répartition non enregistrée${NNBSP}: ${invalidReason()}.`);
   });
 
   // ---------- Édition ----------
 
+  /** Parts égales en pleine précision (la dernière absorbe l'arrondi). */
   function even(list: Row[]): Row[] {
     const n = list.length;
     if (!n) return list;
-    const base = Math.floor(100 / n);
-    const extra = 100 - base * n;
-    return list.map((r, i) => ({ ...r, pct: base + (i < extra ? 1 : 0) }));
+    const share = 100 / n;
+    return list.map((r, i) => ({ ...r, entry: null, pct: i === n - 1 ? 100 - share * (n - 1) : share }));
   }
 
-  /** Ramène des parts à 100 en gardant leurs proportions (plus forts restes, minimum 1). */
+  /** Ramène des parts à 100 en gardant leurs proportions (pleine précision, la dernière absorbe l'arrondi). */
   function normalize(list: Row[]): Row[] {
     const sum = list.reduce((s, r) => s + (r.pct ?? 0), 0);
-    if (!sum) return even(list);
-    const raw = list.map((r) => ((r.pct ?? 0) * 100) / sum);
-    const floors = raw.map((x) => Math.max(1, Math.floor(x)));
-    let left = 100 - floors.reduce((s, x) => s + x, 0);
-    const order = raw.map((x, i) => ({ i, frac: x - Math.floor(x) })).sort((a, b) => b.frac - a.frac);
-    for (let k = 0; left > 0 && order.length; k = (k + 1) % order.length, left--) floors[order[k].i]++;
-    return list.map((r, i) => ({ ...r, pct: floors[i] }));
+    if (!(sum > 0)) return even(list);
+    const scaled = list.map((r) => ({ ...r, entry: null, pct: ((r.pct ?? 0) * 100) / sum }));
+    const others = scaled.slice(0, -1).reduce((s, r) => s + (r.pct ?? 0), 0);
+    scaled[scaled.length - 1].pct = Math.min(100, Math.max(Number.MIN_VALUE, 100 - others));
+    return scaled;
   }
 
   function add(userId: number) {
     addMenu?.hide();
-    if (rows.length === 0) rows = [{ user_id: userId, pct: 100 }];
-    else if (valid) rows = even([...rows, { user_id: userId, pct: null }]);
-    else rows = [...rows, { user_id: userId, pct: Math.min(100, Math.max(1, 100 - total)) }];
+    const fresh: Row = { user_id: userId, pct: null, occupancy: DEFAULT_OCCUPANCY, start_date: null, entry: null };
+    if (rows.length === 0) rows = [{ ...fresh, pct: 100 }];
+    else if (valid) rows = even([...rows, fresh]);
+    else rows = [...rows, { ...fresh, pct: Math.min(100, Math.max(1, 100 - total)) }];
     queue(0);
   }
 
   function remove(userId: number) {
     const wasValid = valid;
     let rest = rows.filter((r) => r.user_id !== userId);
-    if (rest.length === 1) rest = [{ ...rest[0], pct: 100 }];
+    if (rest.length === 1) rest = [{ ...rest[0], pct: 100, entry: null }];
     else if (rest.length > 1 && wasValid) rest = normalize(rest);
     rows = rest;
     queue(0);
@@ -174,18 +318,56 @@
     queue(0);
   }
 
-  function oninput(i: number, e: Event & { currentTarget: HTMLInputElement }) {
-    const v = e.currentTarget.value.trim();
-    const n = v === '' ? null : Number(v);
-    rows[i].pct = n == null || !Number.isFinite(n) ? null : n;
+  function onshareinput(i: number, e: Event & { currentTarget: HTMLInputElement }) {
+    const raw = e.currentTarget.value;
+    const v = parseDecimal(raw);
+    rows[i].entry = raw;
+    rows[i].pct = v == null ? null : unit === 'jh' && estimate != null ? (v * 100) / estimate : v;
     queue(400);
   }
 
-  function onblur() {
+  function onoccupancyinput(i: number, e: Event & { currentTarget: HTMLInputElement }) {
+    const v = e.currentTarget.value.trim();
+    const n = v === '' ? null : Number(v);
+    rows[i].occupancy = n == null || !Number.isFinite(n) ? null : n;
+    queue(400);
+  }
+
+  /** Date saisie au clavier : incomplète ou invraisemblable, elle n'est pas prise en compte. */
+  function plausible(date: string): boolean {
+    const y = Number(date.slice(0, 4));
+    return toDay(date) != null && y >= 1970 && y <= 2200;
+  }
+
+  function onstartchange(i: number, e: Event & { currentTarget: HTMLInputElement }) {
+    const v = e.currentTarget.value;
+    if (v && !plausible(v)) return;
+    rows[i].start_date = v || null;
+    queue(0);
+  }
+
+  function onstartblur(i: number, e: Event & { currentTarget: HTMLInputElement }) {
+    const v = e.currentTarget.value;
+    if (v && !plausible(v)) e.currentTarget.value = rows[i].start_date ?? card.start_date ?? '';
+  }
+
+  function inherit(i: number, e: MouseEvent) {
+    rows[i].start_date = null;
+    queue(0);
+    // Le bouton disparaît : le focus passe au champ de date au lieu de tomber sur <body>.
+    (e.currentTarget as HTMLElement).closest('.start')?.querySelector('input')?.focus();
+  }
+
+  function flush() {
     if (timer) {
       clearTimeout(timer);
       save();
     }
+  }
+
+  function onshareblur(i: number) {
+    if (rows[i]) rows[i].entry = null;
+    flush();
   }
 </script>
 
@@ -193,6 +375,22 @@
   <div class="head">
     <h3 class="label" id="{uid}-title">Assignés</h3>
     <div class="head-actions">
+      {#if rows.length > 0}
+        <div class="seg" role="group" aria-label="Unité de la répartition">
+          <button type="button" class:active={unit === 'pct'} aria-pressed={unit === 'pct'} onclick={() => setUnit('pct')}>%</button>
+          <button
+            type="button"
+            class:active={unit === 'jh'}
+            aria-pressed={unit === 'jh'}
+            aria-disabled={estimate == null}
+            aria-label={estimate == null ? 'j/h (ajoutez un chiffrage)' : 'j/h'}
+            onclick={() => setUnit('jh')}
+            {@attach tooltip(estimate == null ? 'Ajoutez un chiffrage pour répartir en j/h' : null)}
+          >
+            j/h
+          </button>
+        </div>
+      {/if}
       {#if rows.length > 1}
         <button class="btn btn-ghost btn-sm" type="button" onclick={split}>Répartir équitablement</button>
       {/if}
@@ -210,49 +408,112 @@
   {:else}
     <ul class="rows">
       {#each rows as row, i (row.user_id)}
-        {@const ok = row.pct != null && Number.isInteger(row.pct) && row.pct >= 1 && row.pct <= 100}
+        {@const who = name(row.user_id)}
+        {@const okShare = shareOk(row.pct)}
+        {@const okOcc = occupancyOk(row.occupancy)}
+        {@const sched = schedules[i]}
+        {@const end = sched ? toDay(sched.end) : null}
         <li class="row">
-          <Avatar id={row.user_id} name={name(row.user_id)} size={24} />
-          <span class="who" title={name(row.user_id)}>
-            {name(row.user_id)}
-            {#if row.user_id === session.user?.id}<span class="you">(vous)</span>{/if}
-          </span>
-          <span class="bar" aria-hidden="true">
-            <span class="fill" style:transform="scaleX({Math.min(Math.max(row.pct ?? 0, 0), 100) / 100})"></span>
-          </span>
-          <span class="pct-field" class:invalid={!ok}>
-            <input
-              class="pct num"
-              type="number"
-              inputmode="numeric"
-              min="1"
-              max="100"
-              step="1"
-              value={row.pct ?? ''}
-              aria-label="Part de {name(row.user_id)} en pourcentage"
-              aria-invalid={!ok}
-              oninput={(e) => oninput(i, e)}
-              {onblur}
-            />
-            <span class="suffix" aria-hidden="true">%</span>
-          </span>
-          <button
-            class="btn btn-ghost btn-sm btn-icon"
-            type="button"
-            aria-label="Retirer {name(row.user_id)}"
-            onclick={() => remove(row.user_id)}
-            {@attach tooltip('Retirer')}
-          >
-            <svg width="12" height="12" viewBox="0 0 14 14" aria-hidden="true">
-              <path d="M3.5 3.5l7 7M10.5 3.5l-7 7" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" />
-            </svg>
-          </button>
+          <div class="line1">
+            <Avatar id={row.user_id} name={who} size={24} />
+            <span class="who" title={who}>
+              {who}
+              {#if row.user_id === session.user?.id}<span class="you">(vous)</span>{/if}
+            </span>
+            <span class="bar" aria-hidden="true">
+              <span class="fill" style:transform="scaleX({Math.min(Math.max(row.pct ?? 0, 0), 100) / 100})"></span>
+            </span>
+            <span class="share-field" class:invalid={!okShare}>
+              <input
+                class="share num"
+                class:wide={unit === 'jh'}
+                type="text"
+                inputmode="decimal"
+                autocomplete="off"
+                spellcheck="false"
+                value={shown(row)}
+                aria-label={unit === 'jh' ? `Part de ${who} en jours/homme` : `Part de ${who} en pourcentage`}
+                aria-invalid={!okShare}
+                oninput={(e) => onshareinput(i, e)}
+                onblur={() => onshareblur(i)}
+              />
+              <span class="suffix" aria-hidden="true">{unit === 'jh' ? 'j/h' : '%'}</span>
+            </span>
+            <button
+              class="btn btn-ghost btn-sm btn-icon"
+              type="button"
+              aria-label="Retirer {who}"
+              onclick={() => remove(row.user_id)}
+              {@attach tooltip('Retirer')}
+            >
+              <svg width="12" height="12" viewBox="0 0 14 14" aria-hidden="true">
+                <path d="M3.5 3.5l7 7M10.5 3.5l-7 7" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" />
+              </svg>
+            </button>
+          </div>
+
+          <div class="line2">
+            <span class="occ" class:invalid={!okOcc} {@attach tooltip('Part de son temps consacrée à la carte')}>
+              <input
+                class="mini num"
+                type="number"
+                inputmode="numeric"
+                min="1"
+                max="100"
+                step="1"
+                value={row.occupancy ?? ''}
+                aria-label="Occupation de {who}, en pourcentage de son temps"
+                aria-invalid={!okOcc}
+                oninput={(e) => onoccupancyinput(i, e)}
+                onblur={flush}
+              />
+              <span class="unit" aria-hidden="true">%{NNBSP}du temps</span>
+            </span>
+
+            <span class="start">
+              <span class="unit" aria-hidden="true">dès le</span>
+              <input
+                class="mini date num"
+                class:inherited={!row.start_date}
+                type="date"
+                value={row.start_date ?? card.start_date ?? ''}
+                aria-label={row.start_date
+                  ? `Date de début de ${who}`
+                  : `Date de début de ${who} (comme la carte${card.start_date ? '' : ', qui n’en a pas'})`}
+                onchange={(e) => onstartchange(i, e)}
+                onblur={(e) => onstartblur(i, e)}
+              />
+              {#if row.start_date}
+                <button
+                  class="btn btn-ghost btn-sm btn-icon reset"
+                  type="button"
+                  aria-label="Reprendre la date de la carte pour {who}"
+                  onclick={(e) => inherit(i, e)}
+                  {@attach tooltip('Reprendre la date de la carte')}
+                >
+                  <svg width="10" height="10" viewBox="0 0 14 14" aria-hidden="true">
+                    <path d="M3.5 3.5l7 7M10.5 3.5l-7 7" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" />
+                  </svg>
+                </button>
+              {:else}
+                <span class="hint">comme la carte</span>
+              {/if}
+            </span>
+
+            <span class="result num" class:none={!sched}>
+              {#if sched && end != null}
+                → {formatDay(end)} · {fmtWorkingDays(sched.working_days)}
+              {:else}
+                {rowHint(row)}
+              {/if}
+            </span>
+          </div>
         </li>
       {/each}
     </ul>
 
-    <div class="total" class:ok={valid} role="status">
-      {#if valid}
+    <div class="total" class:ok={sharesOk && totalOk} role="status">
+      {#if sharesOk && totalOk}
         <svg width="14" height="14" viewBox="0 0 16 16" aria-hidden="true">
           <path d="M3.5 8.5l3 3 6-7" stroke="currentColor" stroke-width="1.7" fill="none" stroke-linecap="round" stroke-linejoin="round" />
         </svg>
@@ -262,24 +523,31 @@
           <path d="M8 6.5v3M8 11.6v.01" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" />
         </svg>
       {/if}
-      <span class="num">Total{NNBSP}: {fmtPct(total)}</span>
-      {#if !valid}
-        <span class="msg">La répartition doit totaliser 100{NNBSP}%</span>
+      {#if unit === 'jh' && estimate != null}
+        <span class="num">Total{NNBSP}: {fmtNum(totalDays)} / {fmtEstimate(estimate)}</span>
+        {#if !(sharesOk && totalOk)}
+          <span class="msg">La répartition doit totaliser le chiffrage</span>
+        {/if}
+      {:else}
+        <span class="num">Total{NNBSP}: {fmtPct(Math.round(total * 100) / 100)}</span>
+        {#if !(sharesOk && totalOk)}
+          <span class="msg">La répartition doit totaliser 100{NNBSP}%</span>
+        {/if}
       {/if}
     </div>
   {/if}
 
   <p class="effect">
-    {#if duration == null}
+    {#if estimate == null}
       Ajoutez un chiffrage pour calculer la durée.
+    {:else if !aggregate}
+      Ajoutez une date de début pour planifier la carte.
+    {:else if rows.length > 1}
+      Ensemble{NNBSP}: <strong class="num">{formatDayRange(toDay(aggregate.start) ?? 0, toDay(aggregate.end) ?? 0)}</strong>
+      <span class="muted">· {fmtWorkingDays(aggregate.working_days)}</span>
     {:else}
-      Durée{NNBSP}: <strong class="num">{fmtWorkingDays(duration)}</strong>
-      {#if rows.length > 1}
-        <span class="muted">(part la plus forte{NNBSP}: {fmtPct(maxShare)})</span>
-      {/if}
-      {#if schedule}
-        · fin prévue <strong class="num">{formatLong(toDay(schedule.end) ?? 0)}</strong>
-      {/if}
+      Durée{NNBSP}: <strong class="num">{fmtWorkingDays(aggregate.working_days)}</strong>
+      · fin prévue <strong class="num">{formatLong(toDay(aggregate.end) ?? 0)}</strong>
     {/if}
   </p>
 </section>
@@ -315,6 +583,7 @@
 
   .head-actions {
     display: flex;
+    align-items: center;
     gap: 2px;
   }
 
@@ -323,6 +592,62 @@
     font-size: 12px;
     font-weight: 500;
     letter-spacing: 0;
+  }
+
+  /* Bascule d'unité : même dessin que l'échelle de la chronologie, en plus compact. */
+  .seg {
+    display: inline-flex;
+    gap: 2px;
+    margin-right: 6px;
+    padding: 2px;
+    border-radius: var(--radius-sm);
+    background: var(--surface-3);
+  }
+
+  .seg button {
+    height: 20px;
+    min-width: 28px;
+    padding: 0 7px;
+    border: 0;
+    border-radius: 4px;
+    background: transparent;
+    color: var(--text-muted);
+    font: inherit;
+    font-size: 12px;
+    font-weight: 500;
+    cursor: pointer;
+    transition:
+      transform var(--dur-press) var(--ease-out),
+      color var(--dur-hover) ease;
+  }
+
+  .seg button:active:not([aria-disabled='true']) {
+    transform: scale(0.97);
+  }
+
+  .seg button.active {
+    background: var(--surface);
+    color: var(--text);
+    box-shadow: var(--shadow-sm);
+  }
+
+  .seg button[aria-disabled='true'] {
+    color: var(--text-subtle);
+    cursor: default;
+  }
+
+  .seg button:focus-visible {
+    outline: none;
+    box-shadow: var(--focus);
+  }
+
+  @media (prefers-color-scheme: dark) {
+    .seg {
+      background: var(--surface-2);
+    }
+    .seg button.active {
+      background: var(--surface-3);
+    }
   }
 
   .empty {
@@ -337,18 +662,27 @@
   .rows {
     display: flex;
     flex-direction: column;
-    gap: 2px;
+    gap: 4px;
     margin: 0;
     padding: 0;
     list-style: none;
   }
 
+  /* Un assigné = un petit bloc : nom et part, puis occupation, date de début et résultat. */
   .row {
+    display: flex;
+    flex-direction: column;
+    gap: 4px;
+    padding: 6px 6px 8px 8px;
+    border: 1px solid var(--border);
+    border-radius: var(--radius);
+  }
+
+  .line1 {
     display: grid;
-    grid-template-columns: 24px minmax(0, 1fr) 72px 72px 26px;
+    grid-template-columns: 24px minmax(0, 1fr) 56px 84px 26px;
     align-items: center;
     gap: 10px;
-    min-height: 36px;
   }
 
   .who {
@@ -381,22 +715,18 @@
     transform-origin: left center;
   }
 
-  .pct-field {
+  .share-field {
     position: relative;
     display: block;
   }
 
-  .pct {
-    width: 100%;
-    height: 28px;
-    padding: 0 22px 0 8px;
+  .share,
+  .mini {
     border: 1px solid var(--border);
     border-radius: var(--radius-sm);
     background: var(--surface);
     color: var(--text);
     font: inherit;
-    font-size: 13px;
-    text-align: right;
     -moz-appearance: textfield;
     appearance: textfield;
     transition:
@@ -404,19 +734,33 @@
       box-shadow var(--dur-hover) ease;
   }
 
-  .pct::-webkit-outer-spin-button,
-  .pct::-webkit-inner-spin-button {
+  .share {
+    width: 100%;
+    height: 28px;
+    padding: 0 22px 0 8px;
+    font-size: 13px;
+    text-align: right;
+  }
+
+  .share.wide {
+    padding-right: 30px;
+  }
+
+  .mini::-webkit-outer-spin-button,
+  .mini::-webkit-inner-spin-button {
     margin: 0;
     -webkit-appearance: none;
   }
 
-  .pct:focus {
+  .share:focus,
+  .mini:focus {
     outline: none;
     border-color: var(--accent);
     box-shadow: var(--focus);
   }
 
-  .invalid .pct {
+  .invalid .share,
+  .invalid .mini {
     border-color: color-mix(in srgb, var(--warning) 60%, var(--border));
   }
 
@@ -428,6 +772,69 @@
     font-size: 12px;
     color: var(--text-subtle);
     pointer-events: none;
+  }
+
+  /* Deuxième ligne alignée sur le nom (avatar 24 + écart 10). */
+  .line2 {
+    display: flex;
+    flex-wrap: wrap;
+    align-items: center;
+    gap: 4px 12px;
+    padding-left: 34px;
+    font-size: 12px;
+    color: var(--text-muted);
+  }
+
+  .occ,
+  .start {
+    display: inline-flex;
+    align-items: center;
+    gap: 4px;
+  }
+
+  .unit,
+  .hint {
+    white-space: nowrap;
+  }
+
+  .hint {
+    color: var(--text-subtle);
+  }
+
+  .mini {
+    height: 24px;
+    padding: 0 6px;
+    font-size: 12px;
+  }
+
+  .occ .mini {
+    width: 44px;
+    text-align: right;
+  }
+
+  .date {
+    width: 128px;
+  }
+
+  /* Date héritée de la carte : affichée en retrait, c'est un rappel, pas une valeur propre. */
+  .date.inherited:not(:focus) {
+    color: var(--text-subtle);
+  }
+
+  .start .reset {
+    width: 20px;
+    height: 20px;
+  }
+
+  .result {
+    color: var(--text);
+    font-weight: 500;
+    white-space: nowrap;
+  }
+
+  .result.none {
+    font-weight: 400;
+    color: var(--text-subtle);
   }
 
   /*
@@ -505,5 +912,11 @@
     padding: 8px;
     font-size: 12.5px;
     color: var(--text-muted);
+  }
+
+  @media (prefers-reduced-motion: reduce) {
+    .seg button:active {
+      transform: none;
+    }
   }
 </style>

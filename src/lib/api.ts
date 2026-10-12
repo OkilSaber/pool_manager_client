@@ -2,7 +2,7 @@
 // Dans Tauri, les requêtes passent par le plugin http (Rust) : pas de CORS ni de blocage
 // « mixed content » vers un serveur http du LAN. Dans un navigateur (dev), fetch natif.
 
-import type { Assignee } from './types/Assignee';
+import type { AssigneeInput } from './types/AssigneeInput';
 import type { AuthResponse } from './types/AuthResponse';
 import type { Card } from './types/Card';
 import type { CreateCard } from './types/CreateCard';
@@ -162,6 +162,6 @@ export const api = {
   createCard: (projectId: number, input: CreateCard) => request<Card>('POST', `/projects/${projectId}/cards`, input),
   getCard: (id: number) => request<Card>('GET', `/cards/${id}`),
   updateCard: (id: number, patch: UpdateCard) => request<Card>('PATCH', `/cards/${id}`, patch),
-  setAssignees: (id: number, assignees: Assignee[]) => request<Card>('PUT', `/cards/${id}/assignees`, assignees),
+  setAssignees: (id: number, assignees: AssigneeInput[]) => request<Card>('PUT', `/cards/${id}/assignees`, assignees),
   deleteCard: (id: number) => request<void>('DELETE', `/cards/${id}`)
 };

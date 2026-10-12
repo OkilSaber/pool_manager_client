@@ -241,20 +241,21 @@
   const TIP_WARM = 300;
   const TIP_WIDTH = 300;
 
-  let tip = $state({ cardId: null as number | null, left: 0, y: 0, below: true, originX: 0 });
+  let tip = $state({ cardId: null as number | null, userId: null as number | null, left: 0, y: 0, below: true, originX: 0 });
   let tipOpen = $state(false);
   let tipInstant = $state(false);
   let tipTimer: ReturnType<typeof setTimeout> | undefined;
   let tipClosedAt = -Infinity;
   const tipCard = $derived(tip.cardId != null ? (board.card(tip.cardId) ?? null) : null);
 
-  function showTip(cardId: number, anchor: DOMRect, x: number) {
+  function showTip(cardId: number, userId: number | null, anchor: DOMRect, x: number) {
     if (dragging) return;
     clearTimeout(tipTimer);
     const below = anchor.bottom + 200 < window.innerHeight;
     const left = Math.round(Math.min(Math.max(8, x - 24), window.innerWidth - TIP_WIDTH - 8));
     tip = {
       cardId,
+      userId,
       left,
       y: Math.round(below ? anchor.bottom + 6 : window.innerHeight - anchor.top + 6),
       below,
@@ -306,14 +307,34 @@
     return { duration: params.duration, easing: params.easing, css: (_t, u) => `transform: translateY(${u * dy}px);` };
   }
 
-  function moveCard(cardId: number, start: number, viaKeyboard: boolean) {
+  /**
+   * Replanifie une carte (sa date de début) ou, pour la part d'un assigné, la date de début de cette personne :
+   * même répartition et mêmes occupations, les autres assignés gardent leur date (propre ou héritée).
+   */
+  function moveCard(cardId: number, userId: number | null, start: number, viaKeyboard: boolean) {
     flipInstant = viaKeyboard;
-    void board.updateCard(cardId, { start_date: fromDay(start) });
+    const card = board.card(cardId);
+    if (!card) return;
+    if (userId == null) {
+      void board.updateCard(cardId, { start_date: fromDay(start) });
+    } else {
+      if (!card.assignees.some((a) => a.user_id === userId)) return;
+      void board.setAssignees(
+        cardId,
+        card.assignees.map((a) => {
+          const own = a.user_id === userId ? fromDay(start) : a.start_date;
+          return { user_id: a.user_id, pct: a.pct, occupancy: a.occupancy, ...(own ? { start_date: own } : {}) };
+        })
+      );
+    }
     // La mise à jour optimiste est synchrone : la nouvelle planification est déjà là.
-    const s = board.card(cardId)?.schedule;
+    const after = board.card(cardId);
+    const s = userId == null ? after?.schedule : after?.assignees.find((a) => a.user_id === userId)?.schedule;
     const a = toDay(s?.start);
     const b = toDay(s?.end);
-    if (a != null && b != null) announcement = `Replanifiée : ${formatRange(a, b)}`;
+    if (a == null || b == null) return;
+    const who = userId == null ? '' : ` (${board.member(userId)?.display_name ?? 'ancien membre'})`;
+    announcement = `Replanifiée${who} : ${formatRange(a, b)}`;
   }
 
   async function planToday(cardId: number) {
@@ -498,6 +519,7 @@
 
     <Tooltip
       card={tipCard}
+      userId={tip.userId}
       open={tipOpen && !dragging && tipCard != null}
       instant={tipInstant}
       left={tip.left}

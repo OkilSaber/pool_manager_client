@@ -9,11 +9,12 @@
   import { toDay } from '$lib/dates';
   import { board } from '$lib/stores/board.svelte';
   import type { Card } from '$lib/types/Card';
-  import { fmtEstimate, fmtPct, fmtWorkingDays } from '$lib/format';
+  import { fmtEstimate, fmtPct, fmtWorkingDays, NNBSP } from '$lib/format';
   import { formatRange } from './timeline';
 
   let {
     card,
+    userId = null,
     open,
     instant,
     left,
@@ -22,6 +23,8 @@
     originX
   }: {
     card: Card | null;
+    /** Part survolée (carte à plusieurs assignés) : la personne, sa part, son occupation et ses dates */
+    userId?: number | null;
     open: boolean;
     instant: boolean;
     left: number;
@@ -37,6 +40,11 @@
   const ref = $derived(card ? board.cardKey(card) : '');
   const start = $derived(toDay(card?.schedule?.start));
   const end = $derived(toDay(card?.schedule?.end));
+  const person = $derived(userId != null ? card?.assignees.find((a) => a.user_id === userId) : undefined);
+  const personName = $derived(person ? (board.member(person.user_id)?.display_name ?? 'Ancien membre') : '');
+  const pStart = $derived(toDay(person?.schedule?.start));
+  const pEnd = $derived(toDay(person?.schedule?.end));
+  const round2 = (n: number) => Math.round(n * 100) / 100;
 </script>
 
 <div
@@ -65,27 +73,54 @@
         <span class="state"><span class="dot" style:background={cardState.color}></span>{cardState.name}</span>
       {/if}
     </div>
-    {#if start != null && end != null && card.schedule}
-      <div class="when num">
-        <span class="dates">{formatRange(start, end)}</span>
-        <span class="sub">
-          {fmtWorkingDays(card.schedule.working_days)}{#if card.estimate_days != null}&nbsp;· {fmtEstimate(card.estimate_days)}{/if}
+    {#if person}
+      <div class="person">
+        <div class="who">
+          <Avatar id={person.user_id} name={personName} size={16} />
+          <span class="name">{personName}</span>
+        </div>
+        <span class="sub num">
+          {fmtPct(round2(person.pct))}{#if card.estimate_days != null}&nbsp;· {fmtEstimate(
+              round2((card.estimate_days * person.pct) / 100)
+            )}{/if}&nbsp;· {fmtPct(person.occupancy)} du temps
         </span>
+        {#if pStart != null && pEnd != null && person.schedule}
+          <div class="when num">
+            <span class="dates">{formatRange(pStart, pEnd)}</span>
+            <span class="sub">
+              {fmtWorkingDays(person.schedule.working_days)}{#if !person.start_date}&nbsp;· date de la carte{/if}
+            </span>
+          </div>
+        {/if}
       </div>
-    {/if}
-    {#if card.assignees.length}
-      <ul class="people">
-        {#each card.assignees as a (a.user_id)}
-          {@const name = board.member(a.user_id)?.display_name ?? 'Ancien membre'}
-          <li>
-            <Avatar id={a.user_id} {name} size={16} />
-            <span class="name">{name}</span>
-            <span class="pct num">{fmtPct(a.pct)}</span>
-          </li>
-        {/each}
-      </ul>
+      {#if start != null && end != null && card.schedule}
+        <div class="sub num card-span">
+          Carte{NNBSP}: {formatRange(start, end)}{#if card.estimate_days != null}&nbsp;· {fmtEstimate(card.estimate_days)}{/if}
+        </div>
+      {/if}
     {:else}
-      <div class="sub">Non assigné</div>
+      {#if start != null && end != null && card.schedule}
+        <div class="when num">
+          <span class="dates">{formatRange(start, end)}</span>
+          <span class="sub">
+            {fmtWorkingDays(card.schedule.working_days)}{#if card.estimate_days != null}&nbsp;· {fmtEstimate(card.estimate_days)}{/if}
+          </span>
+        </div>
+      {/if}
+      {#if card.assignees.length}
+        <ul class="people">
+          {#each card.assignees as a (a.user_id)}
+            {@const name = board.member(a.user_id)?.display_name ?? 'Ancien membre'}
+            <li>
+              <Avatar id={a.user_id} {name} size={16} />
+              <span class="name">{name}</span>
+              <span class="pct num">{fmtPct(round2(a.pct))}</span>
+            </li>
+          {/each}
+        </ul>
+      {:else}
+        <div class="sub">Non assigné</div>
+      {/if}
     {/if}
   {/if}
 </div>
@@ -203,6 +238,26 @@
 
   .sub {
     color: var(--text-muted);
+  }
+
+  /* Part survolée : la personne d'abord, ses chiffres et ses dates groupés dessous. */
+  .person {
+    display: flex;
+    flex-direction: column;
+    gap: 6px;
+    padding-top: 8px;
+    border-top: 1px solid var(--border);
+  }
+
+  .who {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    font-weight: 500;
+  }
+
+  .card-span {
+    margin-top: -2px;
   }
 
   .people {

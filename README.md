@@ -105,25 +105,26 @@ Le client a besoin d'un [serveur Pool Manager](https://github.com/OkilSaber/pool
 (sur votre machine ou le réseau local). Au premier lancement, renseignez son adresse dans
 **Paramètres du serveur** (par défaut `http://localhost:8080`), puis créez un compte.
 
-### Prérequis de compilation
-
-- Rust stable, Node.js ≥ 20, `cargo install tauri-cli --version "^2"`
-- Linux : dépendances WebKitGTK de Tauri, voir <https://v2.tauri.app/start/prerequisites/>
-  (`libwebkit2gtk-4.1-dev`, `libayatana-appindicator3-dev`, `librsvg2-dev`, `build-essential`, `libssl-dev`)
-
 ### Construire les paquets
 
-```bash
-npm install
-npm run tauri build
-```
+Les scripts de `scripts/` déposent les paquets et leurs sommes SHA-256 dans `dist/`.
 
-| OS    | Sortie (`src-tauri/target/release/bundle/`) |
-| ----- | ------------------------------------------- |
-| macOS | `macos/Pool Manager.app`, `dmg/*.dmg`       |
-| Linux | `deb/*.deb`, `appimage/*.AppImage`          |
+| Script | Où le lancer | Produit |
+| --- | --- | --- |
+| `scripts/build-macos.sh [aarch64\|x64\|all]` | macOS | `.dmg` et `.app.tar.gz` (Apple Silicon et/ou Intel) |
+| `scripts/build-linux.sh` | Linux | `.AppImage` et `.deb` |
+| `scripts/build-linux-docker.sh [amd64\|arm64]` | n'importe quel OS avec Docker | `.AppImage` et `.deb` |
+| `scripts\build-windows.ps1` | Windows (PowerShell) | installeurs `.exe` (NSIS) et `.msi` |
 
-Chaque paquet se construit sur son OS cible.
+Prérequis communs : Rust stable (rustup) et Node.js ≥ 20.
+
+- **Linux** : dépendances WebKitGTK de Tauri (`libwebkit2gtk-4.1-dev`, `libayatana-appindicator3-dev`,
+  `librsvg2-dev`, `libssl-dev`, `libgtk-3-dev`, `patchelf`, `build-essential`), voir
+  <https://v2.tauri.app/start/prerequisites/>.
+- **Docker** : sur un Mac Apple Silicon, le build `amd64` tourne en émulation ; le premier dure 20 à 40 min,
+  les suivants réutilisent le cache (volumes Docker `pool-manager-client-*`).
+- **Windows** : « Build Tools for Visual Studio » (Développement Desktop en C++) ; WebView2 est déjà présent
+  sur Windows 10/11. Lancer avec `powershell -ExecutionPolicy Bypass -File scripts\build-windows.ps1`.
 
 ## Développement
 

@@ -23,11 +23,11 @@
 
   session.init();
 
-  // Garde de navigation : non connecté → /login ; connecté sur login/signup → /boards.
+  // Garde de navigation : non connecté → /login ; connecté sur login/signup → /pools.
   $effect(() => {
     if (!session.ready) return;
     if (!session.user && !isPublic) goto('/login', { replaceState: true });
-    else if (session.user && GUEST_ONLY.includes(path)) goto('/boards', { replaceState: true });
+    else if (session.user && GUEST_ONLY.includes(path)) goto('/pools', { replaceState: true });
   });
 </script>
 

@@ -1,24 +1,49 @@
 <!--
   Détail d'une carte (une seule instance par page, partagée par le Kanban et la Chronologie).
-  Enregistrement automatique : textes à la sortie du champ (titre aussi sur Entrée),
+
+  Consultation / édition — enregistrement automatique : textes à la sortie du champ (titre aussi sur Entrée),
   listes, priorité et date immédiatement. Échap dans un champ modifié annule la saisie.
+
+  Création (`draftState` renseigné, `cardId` nul) : mêmes champs, gardés en brouillon. Entrée dans le titre ou
+  « Créer la carte » crée la carte, puis la modale passe en édition sur elle (assignés compris). Fermer un brouillon
+  vide n'enregistre rien ; fermer avec un titre crée la carte (aucune saisie perdue).
 -->
 <script lang="ts">
+  import { tick, untrack } from 'svelte';
   import Modal from '$lib/components/Modal.svelte';
-  import { formatLong, toDay } from '$lib/dates';
+  import BusyLabel from '$lib/components/shell/BusyLabel.svelte';
+  import { computeSchedule, formatLong, toDay } from '$lib/dates';
   import { PRIORITIES, priority } from '$lib/priority';
   import { board, positionBetween } from '$lib/stores/board.svelte';
   import { toast } from '$lib/stores/toast.svelte';
   import type { Card } from '$lib/types/Card';
+  import type { CreateCard } from '$lib/types/CreateCard';
   import type { UpdateCard } from '$lib/types/UpdateCard';
+  import { lastProject, rememberProject } from '$lib/components/projects/project';
   import AssigneeEditor from './AssigneeEditor.svelte';
   import { autosize } from './autosize';
   import { fmtCreated, fmtWorkingDays, parseEstimate } from '$lib/format';
   import { tooltip } from '$lib/tooltip';
 
-  let { cardId, open = $bindable(false) }: { cardId: number | null; open?: boolean } = $props();
+  let {
+    cardId = $bindable(null),
+    draftState = $bindable(null),
+    open = $bindable(false)
+  }: {
+    /** Carte affichée ; passe à la carte créée à la fin d'une création. */
+    cardId?: number | null;
+    /** Colonne d'une carte en cours de création (avec `cardId` nul) ; remis à null une fois la carte créée. */
+    draftState?: number | null;
+    open?: boolean;
+  } = $props();
 
   const uid = $props.id();
+
+  const DEFAULT_PRIORITY = 2;
+
+  /** Mode création : aucune carte encore, une colonne cible. */
+  const creating = $derived(cardId == null && draftState != null);
+  const inPool = $derived(board.kind === 'pool');
 
   // La carte affichée reste celle d'avant pendant l'animation de fermeture (ex. juste après suppression).
   const live = $derived(cardId != null ? board.card(cardId) : undefined);
@@ -43,8 +68,16 @@
   let description = $state('');
   let estimate = $state('');
 
+  // Brouillon de création : propriétés sans champ texte.
+  let draftPriority = $state(DEFAULT_PRIORITY);
+  let draftStart = $state('');
+  let draftProject = $state<number | null>(null);
+  /** Création en cours (requête partie). */
+  let busy = $state(false);
+
   // Virgule décimale à l'affichage ; parseEstimate accepte « 2,5 » comme « 2.5 ».
   const estimateText = (c: Card) => (c.estimate_days == null ? '' : String(c.estimate_days).replace('.', ','));
+  const cleanTitle = (s: string) => s.trim().replace(/\s+/g, ' ');
 
   // Nouvelle carte affichée : aucun champ en cours d'édition, pas de confirmation en attente.
   let shownId: number | null = null;
@@ -63,6 +96,42 @@
     if (f !== 'description') description = c.description;
     if (f !== 'estimate') estimate = estimateText(c);
   });
+
+  // ---------- Création : brouillon neuf à chaque ouverture ----------
+
+  /** Projet proposé : celui du tableau (vue projet), sinon l'unique projet filtré, le dernier utilisé, le premier actif. */
+  function defaultProject(): number | null {
+    if (board.kind === 'project') return board.project?.id ?? null;
+    const active = board.activeProjects.map((p) => p.id);
+    const filtered = board.projectFilter.filter((id) => active.includes(id));
+    if (filtered.length === 1) return filtered[0];
+    const remembered = board.pool ? lastProject(board.pool.id) : null;
+    const pool = filtered.length ? filtered : active;
+    if (remembered != null && pool.includes(remembered)) return remembered;
+    return pool[0] ?? null;
+  }
+
+  let wasOpen = false;
+  $effect.pre(() => {
+    const o = open;
+    if (o === wasOpen) return;
+    wasOpen = o;
+    if (!o || !untrack(() => creating)) return;
+    untrack(() => {
+      title = '';
+      description = '';
+      estimate = '';
+      draftPriority = DEFAULT_PRIORITY;
+      draftStart = '';
+      draftProject = defaultProject();
+      focused = null;
+      busy = false;
+    });
+  });
+
+  /** Projet de la carte à créer (implicite en vue projet). */
+  const targetProject = $derived(board.kind === 'project' ? (board.project?.id ?? null) : draftProject);
+  const canCreate = $derived(creating && cleanTitle(title).length > 0 && targetProject != null && !busy);
 
   // ---------- Indicateur « Enregistré » ----------
 
@@ -89,11 +158,62 @@
     }
   }
 
+  // ---------- Création ----------
+
+  let titleInput = $state<HTMLTextAreaElement>();
+  let descInput = $state<HTMLTextAreaElement>();
+
+  /**
+   * Crée la carte depuis le brouillon. `stay` : la modale reste ouverte et passe en édition sur la carte créée
+   * (Entrée, bouton) ; sinon (fermeture) la carte est simplement créée.
+   */
+  async function create(stay: boolean) {
+    const projectId = targetProject;
+    const stateId = draftState;
+    const t = cleanTitle(title);
+    if (!creating || busy || !t || projectId == null || stateId == null) return;
+    const input: CreateCard = { state_id: stateId, title: t, priority: draftPriority };
+    if (description.trim()) input.description = description;
+    const est = parseEstimate(estimate);
+    if (typeof est === 'number') input.estimate_days = est;
+    if (draftStart && plausible(draftStart)) input.start_date = draftStart;
+    if (board.kind === 'pool' && board.pool) rememberProject(board.pool.id, projectId);
+
+    busy = true;
+    const created = await board.createCard(projectId, input);
+    busy = false;
+    if (!created) return; // toast affiché par le store ; le brouillon reste en place
+
+    // Modifications faites pendant la requête : enregistrées tout de suite sur la carte créée.
+    const extra: UpdateCard = {};
+    const t2 = cleanTitle(title);
+    if (t2 && t2 !== created.title) extra.title = t2;
+    if (description !== created.description && (description.trim() || created.description)) extra.description = description;
+    const est2 = parseEstimate(estimate);
+    if (est2 !== undefined && est2 !== created.estimate_days) extra.estimate_days = est2;
+    if (draftPriority !== created.priority) extra.priority = draftPriority;
+    const start2 = draftStart && plausible(draftStart) ? draftStart : null;
+    if (start2 !== created.start_date) extra.start_date = start2;
+    if (Object.keys(extra).length) void board.updateCard(created.id, extra);
+
+    if (!stay || !open || cardId != null || draftState !== stateId) return;
+    // Bascule en édition sans réinitialiser les champs en cours de saisie.
+    const fromTitle = document.activeElement === titleInput;
+    shownId = created.id;
+    cardId = created.id;
+    draftState = null;
+    flashSaved();
+    await tick();
+    // Titre validé par Entrée, ou bouton « Créer » remplacé par le pied d'édition : on enchaîne sur la description.
+    const lost = !document.activeElement || document.activeElement === document.body;
+    if (fromTitle || lost) descInput?.focus();
+  }
+
   // ---------- Enregistrements ----------
 
   function saveTitle() {
     if (!card) return;
-    const v = title.trim().replace(/\s+/g, ' ');
+    const v = cleanTitle(title);
     if (!v) {
       title = card.title; // titre obligatoire : on revient à la valeur enregistrée
       return;
@@ -127,14 +247,27 @@
   });
 
   function setState(stateId: number) {
+    if (creating) {
+      draftState = stateId;
+      return;
+    }
     if (!card || stateId === card.state_id) return;
     // En fin de colonne cible, calculé ici pour que l'affichage optimiste soit déjà à la bonne place.
     const tail = board.cardsInState(stateId).at(-1);
     patch({ state_id: stateId, position: positionBetween(tail?.position, undefined) });
   }
 
+  function setProject(projectId: number) {
+    if (creating) {
+      draftProject = projectId;
+      return;
+    }
+    if (card && projectId !== card.project_id) patch({ project_id: projectId });
+  }
+
   function setPriority(value: number) {
-    if (card && value !== card.priority) patch({ priority: value });
+    if (creating) draftPriority = value;
+    else if (card && value !== card.priority) patch({ priority: value });
   }
 
   /** Les années partielles pendant la frappe (0002…) ne sont pas enregistrées. */
@@ -152,9 +285,13 @@
   }
 
   function setStart(value: string) {
+    if (value && !plausible(value)) return;
+    if (creating) {
+      draftStart = value;
+      return;
+    }
     if (!card) return;
     const next = value || null;
-    if (next !== null && !plausible(next)) return;
     if (next !== card.start_date) patch({ start_date: next });
   }
 
@@ -176,7 +313,8 @@
   function ontitlekey(e: KeyboardEvent) {
     if (e.key === 'Enter' && !e.isComposing) {
       e.preventDefault();
-      (e.currentTarget as HTMLElement).blur(); // le blur enregistre
+      if (creating) void create(true);
+      else (e.currentTarget as HTMLElement).blur(); // le blur enregistre
     } else revertOnEscape(e, 'title');
   }
 
@@ -196,10 +334,9 @@
   }
 
   function onprioritykey(e: KeyboardEvent) {
-    if (!card) return;
     let next = -1;
-    if (e.key === 'ArrowRight' || e.key === 'ArrowDown') next = Math.min(4, card.priority + 1);
-    else if (e.key === 'ArrowLeft' || e.key === 'ArrowUp') next = Math.max(0, card.priority - 1);
+    if (e.key === 'ArrowRight' || e.key === 'ArrowDown') next = Math.min(4, vPriority + 1);
+    else if (e.key === 'ArrowLeft' || e.key === 'ArrowUp') next = Math.max(0, vPriority - 1);
     if (next < 0) return;
     e.preventDefault();
     setPriority(next);
@@ -225,7 +362,9 @@
   }
 
   function onclose() {
-    flush();
+    // Brouillon avec un titre : créé à la fermeture (rien n'est perdu) ; brouillon vide : rien.
+    if (creating) void create(false);
+    else flush();
     focused = null;
     clearTimeout(confirmTimer);
     confirming = false;
@@ -233,24 +372,41 @@
 
   // ---------- Dérivés d'affichage ----------
 
-  const column = $derived(card ? board.states.find((s) => s.id === card.state_id) : undefined);
-  const author = $derived(card ? board.member(card.created_by)?.display_name : undefined);
-  const end = $derived(card?.schedule ? toDay(card.schedule.end) : null);
-  const shiftedStart = $derived(
-    card?.schedule && card.start_date && card.schedule.start !== card.start_date ? toDay(card.schedule.start) : null
+  const vState = $derived(card ? card.state_id : draftState);
+  const vPriority = $derived(card ? card.priority : draftPriority);
+  const vStart = $derived(card ? card.start_date : draftStart || null);
+  const vEstimate = $derived.by(() => {
+    if (card) return card.estimate_days;
+    const v = parseEstimate(estimate);
+    return typeof v === 'number' ? v : null;
+  });
+  /** Planification : celle de la carte, ou un aperçu du brouillon (sans assignés : une personne à 100 %). */
+  const schedule = $derived(card ? card.schedule : computeSchedule(vStart, vEstimate, []));
+
+  const column = $derived(vState != null ? board.states.find((s) => s.id === vState) : undefined);
+  const project = $derived(card ? board.projectOf(card.project_id) : targetProject != null ? board.projectOf(targetProject) : undefined);
+  /** Projets proposés (vue pool) : les actifs, plus celui de la carte s'il ne l'est plus. */
+  const projectChoices = $derived(
+    project && project.archived ? [...board.activeProjects, project] : board.activeProjects
   );
+  const author = $derived(card ? board.member(card.created_by)?.display_name : undefined);
+  const end = $derived(schedule ? toDay(schedule.end) : null);
+  const shiftedStart = $derived(schedule && vStart && schedule.start !== vStart ? toDay(schedule.start) : null);
   const missing = $derived.by(() => {
-    if (!card || card.schedule) return '';
-    const noStart = !card.start_date;
-    const noEstimate = card.estimate_days == null;
-    if (noStart && noEstimate) return 'Ajoutez une date de début et un chiffrage pour planifier cette carte.';
+    if (schedule) return '';
+    const noStart = !vStart;
+    const noEstimate = vEstimate == null;
+    if (noStart && noEstimate)
+      return creating
+        ? 'Ajoutez une date de début et un chiffrage pour planifier la carte.'
+        : 'Ajoutez une date de début et un chiffrage pour planifier cette carte.';
     if (noStart) return 'Ajoutez une date de début pour calculer la fin.';
     if (noEstimate) return 'Ajoutez un chiffrage pour calculer la fin.';
     return 'Le chiffrage doit être supérieur à 0.';
   });
 </script>
 
-<Modal bind:open title="Détails de la carte" width={780} {onclose}>
+<Modal bind:open title={creating ? 'Nouvelle carte' : 'Détails de la carte'} width={780} {onclose}>
   {#snippet headerExtra()}
     <span class="saved" class:show={saved} aria-hidden={!saved}>
       <svg width="12" height="12" viewBox="0 0 16 16" aria-hidden="true">
@@ -260,14 +416,32 @@
     </span>
   {/snippet}
 
-  {#if card}
+  {#if card || creating}
     <div class="layout">
       <div class="main">
+        {#if project}
+          <div class="crumb">
+            <span class="project-chip" style:--c={project.color}>
+              <span class="dot" aria-hidden="true"></span>
+              {project.name}
+            </span>
+            {#if card}
+              <span class="key num">{board.cardKey(card)}</span>
+            {:else}
+              <span class="key num muted">{project.code}-…</span>
+            {/if}
+          </div>
+        {/if}
+
+        <!-- svelte-ignore a11y_autofocus -->
         <textarea
+          bind:this={titleInput}
           class="title-input"
           rows="1"
           maxlength="500"
           aria-label="Titre de la carte"
+          placeholder={creating ? 'Titre de la carte' : undefined}
+          autofocus={creating}
           bind:value={title}
           onfocus={() => (focused = 'title')}
           onblur={() => onblur('title')}
@@ -278,6 +452,7 @@
         <div class="field">
           <label class="label" for="{uid}-desc">Description</label>
           <textarea
+            bind:this={descInput}
             id="{uid}-desc"
             class="textarea desc"
             placeholder="Ajoutez du contexte, des liens, des critères d’acceptation…"
@@ -289,15 +464,52 @@
           ></textarea>
         </div>
 
-        <AssigneeEditor {card} onsaved={flashSaved} />
+        {#if card}
+          <AssigneeEditor {card} onsaved={flashSaved} />
+        {:else}
+          <div class="field">
+            <span class="label">Assignés</span>
+            <p class="assign-later">Vous pourrez assigner la carte une fois créée.</p>
+          </div>
+        {/if}
       </div>
 
       <aside class="side" aria-label="Propriétés">
+        {#if inPool}
+          <div class="field">
+            <label class="label" for="{uid}-project">Projet</label>
+            {#if projectChoices.length}
+              <div class="select-wrap" style:--c={project?.color ?? 'var(--text-subtle)'}>
+                <span class="dot" aria-hidden="true"></span>
+                <select
+                  id="{uid}-project"
+                  class="select"
+                  value={card ? card.project_id : (draftProject ?? '')}
+                  required={creating}
+                  onchange={(e) => setProject(Number(e.currentTarget.value))}
+                >
+                  {#if creating && draftProject == null}
+                    <option value="" disabled>Choisir un projet…</option>
+                  {/if}
+                  {#each projectChoices as p (p.id)}
+                    <option value={p.id}>{p.code} · {p.name}</option>
+                  {/each}
+                </select>
+              </div>
+              {#if card}
+                <span class="sub">Changer de projet renumérote la carte.</span>
+              {/if}
+            {:else}
+              <p class="end-note">Aucun projet actif dans ce pool : créez-en un depuis « Projets ».</p>
+            {/if}
+          </div>
+        {/if}
+
         <div class="field">
           <label class="label" for="{uid}-state">État</label>
           <div class="select-wrap" style:--c={column?.color ?? 'var(--text-subtle)'}>
             <span class="dot" aria-hidden="true"></span>
-            <select id="{uid}-state" class="select" value={card.state_id} onchange={(e) => setState(Number(e.currentTarget.value))}>
+            <select id="{uid}-state" class="select" value={vState} onchange={(e) => setState(Number(e.currentTarget.value))}>
               {#each board.states as s (s.id)}
                 <option value={s.id}>{s.name}</option>
               {/each}
@@ -309,7 +521,7 @@
           <span class="label" id="{uid}-prio">Priorité</span>
           <div class="prio" role="radiogroup" aria-labelledby="{uid}-prio" tabindex="-1" onkeydown={onprioritykey}>
             {#each PRIORITIES as p (p.value)}
-              {@const active = card.priority === p.value}
+              {@const active = vPriority === p.value}
               <button
                 type="button"
                 role="radio"
@@ -326,7 +538,7 @@
               </button>
             {/each}
           </div>
-          <span class="sub">{priority(card.priority).name}</span>
+          <span class="sub">{priority(vPriority).name}</span>
         </div>
 
         <div class="field">
@@ -363,14 +575,14 @@
               id="{uid}-start"
               class="input num"
               type="date"
-              value={card.start_date ?? ''}
+              value={vStart ?? ''}
               onchange={(e) => setStart(e.currentTarget.value)}
               onblur={(e) => {
                 // Saisie incomplète ou invraisemblable : on réaffiche la date enregistrée.
-                if (e.currentTarget.value && !plausible(e.currentTarget.value)) e.currentTarget.value = card?.start_date ?? '';
+                if (e.currentTarget.value && !plausible(e.currentTarget.value)) e.currentTarget.value = vStart ?? '';
               }}
             />
-            {#if card.start_date}
+            {#if vStart}
               <button
                 class="btn btn-ghost btn-sm btn-icon"
                 type="button"
@@ -386,12 +598,12 @@
           </div>
         </div>
 
-        <div class="end" class:empty={!card.schedule}>
+        <div class="end" class:empty={!schedule}>
           <span class="label">Fin prévue</span>
-          {#if card.schedule && end != null}
+          {#if schedule && end != null}
             <p class="end-date num">
               <strong>{formatLong(end)}</strong>
-              <span class="muted">· {fmtWorkingDays(card.schedule.working_days)}</span>
+              <span class="muted">· {fmtWorkingDays(schedule.working_days)}</span>
             </p>
             {#if shiftedStart != null}
               <p class="end-note">Début décalé au {formatLong(shiftedStart)} (week-end).</p>
@@ -414,6 +626,20 @@
           <path d="M3 4.5h10M6.5 4.5V3h3v1.5M4.5 4.5l.6 8.5h5.8l.6-8.5" stroke="currentColor" stroke-width="1.3" fill="none" stroke-linejoin="round" />
         </svg>
         {confirming ? 'Confirmer la suppression' : 'Supprimer'}
+      </button>
+    {:else if creating}
+      <span class="created">
+        <span class="kbd" aria-hidden="true">↵</span> dans le titre pour créer
+      </span>
+      <button class="btn btn-sm" type="button" onclick={() => (open = false)}>Fermer</button>
+      <button
+        class="btn btn-sm btn-primary"
+        type="button"
+        disabled={!canCreate && !busy}
+        aria-busy={busy}
+        onclick={() => create(true)}
+      >
+        <BusyLabel {busy}>Créer la carte</BusyLabel>
       </button>
     {/if}
   {/snippet}
@@ -442,7 +668,60 @@
     border-left: 1px solid var(--border);
   }
 
-  /* ---------- Titre ---------- */
+  /* ---------- Projet & titre ---------- */
+
+  .crumb {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    margin-bottom: -12px;
+    font-size: 12.5px;
+  }
+
+  .project-chip {
+    display: inline-flex;
+    align-items: center;
+    gap: 6px;
+    min-width: 0;
+    max-width: 60%;
+    overflow: hidden;
+    font-weight: 500;
+    color: var(--text-muted);
+    white-space: nowrap;
+    text-overflow: ellipsis;
+  }
+
+  .project-chip .dot {
+    flex: none;
+    width: 8px;
+    height: 8px;
+    border-radius: 999px;
+    background: var(--c);
+  }
+
+  .key {
+    flex: none;
+    padding: 1px 6px;
+    border-radius: 4px;
+    background: var(--surface-2);
+    font-size: 11.5px;
+    font-weight: 600;
+    letter-spacing: 0.03em;
+    color: var(--text-muted);
+  }
+
+  .assign-later {
+    margin: 0;
+    padding: 10px 12px;
+    border: 1px dashed var(--border);
+    border-radius: var(--radius);
+    font-size: 12.5px;
+    color: var(--text-muted);
+  }
+
+  .title-input::placeholder {
+    color: var(--text-subtle);
+  }
 
   .title-input {
     width: calc(100% + 16px);

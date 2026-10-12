@@ -7,7 +7,7 @@
 <script module lang="ts">
   import { SvelteMap } from 'svelte/reactivity';
 
-  /** Groupes repliés : gardés en mémoire le temps de la session, par tableau. */
+  /** Groupes repliés : gardés en mémoire le temps de la session, par tableau (pool ou projet). */
   const collapsedGroups = new SvelteMap<string, boolean>();
 </script>
 
@@ -42,6 +42,7 @@
     LABEL_WIDTH,
     plural,
     readPref,
+    resolveGroupBy,
     ROW_HEIGHT,
     unplannedRows,
     writePref,
@@ -54,27 +55,47 @@
   let { onopencard }: { onopencard: (cardId: number) => void } = $props();
 
   let zoom = $state<Zoom>(readPref(ZOOM_KEY, isZoom, 'week'));
-  let groupBy = $state<GroupBy>(readPref(GROUP_KEY, isGroupBy, 'state'));
+  /** Regroupement choisi (enregistré) ; null : rien d'enregistré, défaut selon le type de tableau. */
+  let groupPref = $state<GroupBy | null>(readPref<GroupBy | null>(GROUP_KEY, (v): v is GroupBy => isGroupBy(v), null));
   let todayDay = $state(today());
   let scroller = $state<HTMLDivElement>();
   let viewportW = $state(0);
   let dragging = $state(false);
   let announcement = $state('');
 
+  /** « Projet » n'a de sens que dans un pool (une vue projet n'en montre qu'un). */
+  const groupOptions = $derived(GROUP_BYS.filter((g) => g.value !== 'project' || board.kind === 'pool'));
+  const groupBy = $derived(resolveGroupBy(groupPref, board.kind));
+  /** Zone gardée dans la plage après un changement de zoom (sinon la date ancrée pourrait en sortir). */
+  let keep = $state<{ from: number; to: number } | null>(null);
+
   const dayWidth = $derived(dayWidthOf(zoom));
   // Assez de jours pour remplir la largeur visible quel que soit le zoom, et pour pouvoir placer aujourd'hui au quart gauche.
   const visibleDays = $derived(Math.ceil(Math.max(0, viewportW - LABEL_WIDTH) / dayWidth));
   const range = $derived(
-    computeRange(board.cards, todayDay, visibleDays + 14, Math.ceil(visibleDays / 4) + 1, Math.ceil((visibleDays * 3) / 4) + 7)
+    computeRange(
+      board.visibleCards,
+      todayDay,
+      visibleDays + 14,
+      Math.ceil(visibleDays / 4) + 1,
+      Math.ceil((visibleDays * 3) / 4) + 7,
+      keep
+    )
   );
   const gridWidth = $derived(range.days * dayWidth);
-  const groups = $derived(buildGroups(board.cards, board.states, board.members, groupBy));
-  const unplanned = $derived(unplannedRows(board.cards, board.states));
-  const plannedCount = $derived(board.cards.length - unplanned.length);
-  const boardId = $derived(board.detail?.board.id ?? 0);
+  const groups = $derived(buildGroups(board.visibleCards, board.states, board.members, board.projects, groupBy));
+  const unplanned = $derived(unplannedRows(board.visibleCards, board.states));
+  const plannedCount = $derived(board.visibleCards.length - unplanned.length);
+  /** Tableau ouvert (« pool:3 », « project:12 ») : clé des groupes repliés et de la mise en place initiale. */
+  const scopeKey = $derived(board.ref ? `${board.ref.kind}:${board.ref.id}` : '');
 
   $effect(() => writePref(ZOOM_KEY, zoom));
-  $effect(() => writePref(GROUP_KEY, groupBy));
+
+  function setGroupBy(value: string) {
+    if (!isGroupBy(value)) return;
+    groupPref = value;
+    writePref(GROUP_KEY, value);
+  }
 
   // App de bureau laissée ouverte (et au premier plan) au-delà de minuit : la ligne « aujourd'hui » suit.
   // (Le retour au premier plan est couvert par onfocus sur window.)
@@ -86,11 +107,11 @@
   // ---------- Groupes repliés ----------
 
   function isCollapsed(key: string): boolean {
-    return collapsedGroups.get(`${boardId}:${key}`) === true;
+    return collapsedGroups.get(`${scopeKey}:${key}`) === true;
   }
 
   function toggleGroup(key: string) {
-    const k = `${boardId}:${key}`;
+    const k = `${scopeKey}:${key}`;
     collapsedGroups.set(k, !collapsedGroups.get(k));
   }
 
@@ -150,44 +171,68 @@
     }
   }
 
-  /** Changer de zoom garde la même date au centre de la zone visible. */
-  async function setZoom(next: Zoom) {
+  /**
+   * Date gardée immobile par un changement de zoom : aujourd'hui s'il est visible (à la même distance du bord
+   * gauche), sinon la date au bord gauche de la zone visible. Appliquée par l'effet ci-dessous, une fois la
+   * plage et la largeur du canevas recalculées pour le nouveau zoom.
+   */
+  let zoomAnchor: { day: number; offset: number } | null = null;
+
+  function setZoom(next: Zoom) {
     if (next === zoom) return;
     stopGlide();
+    hideTip();
     const el = scroller;
-    const anchor = el ? range.start + (el.scrollLeft + visibleGrid() / 2) / dayWidth : null;
+    if (el) {
+      const vis = visibleGrid();
+      const todayX = (todayDay - range.start) * dayWidth - el.scrollLeft;
+      const leftDay = range.start + el.scrollLeft / dayWidth;
+      zoomAnchor = todayX >= 0 && todayX < vis ? { day: todayDay, offset: todayX } : { day: leftDay, offset: 0 };
+      // La zone visible au nouveau zoom doit tenir dans la plage, même loin des cartes et d'aujourd'hui.
+      const nextVisible = Math.ceil(vis / dayWidthOf(next));
+      const from = Math.floor(zoomAnchor.day - zoomAnchor.offset / dayWidthOf(next));
+      keep = { from, to: from + nextVisible + 7 };
+    }
     zoom = next;
-    await tick();
-    if (el && anchor != null) el.scrollLeft = (anchor - range.start) * dayWidth - visibleGrid() / 2;
   }
 
-  // La plage s'étend vers le passé (carte avancée) : on compense le défilement pour que la vue ne saute pas.
-  let lastStart: number | null = null;
+  // Après un changement de zoom : la date ancrée revient à sa place. Sinon, si la plage s'étend vers le passé
+  // (carte avancée), on compense le défilement pour que la vue ne saute pas.
+  let last: { start: number; dw: number } | null = null;
   $effect(() => {
     const el = scroller;
     const start = range.start;
     const dw = dayWidth;
+    void gridWidth; // largeur du canevas à jour avant de fixer scrollLeft
     untrack(() => {
-      if (el && lastStart != null && start !== lastStart) {
-        stopGlide();
-        el.scrollLeft += (lastStart - start) * dw;
+      if (el && last) {
+        if (dw !== last.dw && zoomAnchor) {
+          el.scrollLeft = (zoomAnchor.day - start) * dw - zoomAnchor.offset;
+        } else if (start !== last.start) {
+          stopGlide();
+          el.scrollLeft += (last.start - start) * dw;
+        }
       }
-      lastStart = start;
+      zoomAnchor = null;
+      last = el ? { start, dw } : null;
     });
   });
 
   // Première mise en place (et changement de tableau) : aujourd'hui en vue, sans animation.
   // Déclaré après la compensation ci-dessus : il a le dernier mot.
-  let placedFor: number | null = null;
+  let placedFor: string | null = null;
   $effect(() => {
-    const id = boardId;
+    const id = scopeKey;
     if (!scroller) {
       placedFor = null;
       return;
     }
     if (viewportW === 0 || placedFor === id) return;
     placedFor = id;
-    untrack(() => scrollToToday(false));
+    untrack(() => {
+      keep = null;
+      scrollToToday(false);
+    });
   });
 
   // ---------- Infobulle : délai à la première, instantanée ensuite ----------
@@ -332,8 +377,8 @@
       <label class="group-by">
         <span>Regrouper par</span>
         <span class="select-wrap">
-          <select bind:value={groupBy}>
-            {#each GROUP_BYS as g (g.value)}
+          <select value={groupBy} onchange={(e) => setGroupBy(e.currentTarget.value)}>
+            {#each groupOptions as g (g.value)}
               <option value={g.value}>{g.label}</option>
             {/each}
           </select>
@@ -376,7 +421,11 @@
             <div class="row">
               <div class="blank-label"></div>
               <p class="hint" style:left="{LABEL_WIDTH}px">
-                Aucune carte planifiée : il leur faut une date de début et un chiffrage.
+                {#if board.visibleCards.length === 0}
+                  Aucune carte dans les projets affichés.
+                {:else}
+                  Aucune carte planifiée : il leur faut une date de début et un chiffrage.
+                {/if}
               </p>
             </div>
           {/if}
@@ -385,7 +434,8 @@
             {#if groupBy !== 'none'}
               <div class="row group-row" class:spaced={i > 0}>
                 <TimelineGroupHeader
-                  kind={groupBy === 'assignee' ? 'assignee' : 'state'}
+                  kind={groupBy === 'assignee' ? 'assignee' : groupBy === 'project' ? 'project' : 'state'}
+                  code={group.code}
                   label={group.label}
                   count={group.rows.length}
                   load={group.load}

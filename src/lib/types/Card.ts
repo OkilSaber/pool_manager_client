@@ -2,7 +2,11 @@
 import type { Assignee } from "./Assignee";
 import type { Schedule } from "./Schedule";
 
-export type Card = { id: number, board_id: number, state_id: number, title: string, description: string, 
+export type Card = { id: number, project_id: number, 
+/**
+ * Numéro dans le projet (affiché `CODE-number`)
+ */
+number: number, state_id: number, title: string, description: string, 
 /**
  * 0 = P0 (le plus urgent) … 4 = P4
  */

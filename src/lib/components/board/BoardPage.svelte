@@ -1,31 +1,36 @@
 <!--
-  Page d'un tableau : en-tête, vue Kanban ou Chronologie (?view=timeline, conservée au rechargement),
-  et une modale de carte unique partagée par les deux vues.
+  Page d'un pool ou d'un projet : en-tête, filtre par projet (pool), vue Kanban ou Chronologie
+  (?view=timeline, conservée au rechargement), et une modale de carte unique partagée par les deux vues
+  (consultation d'une carte, ou création depuis une colonne).
 -->
 <script lang="ts">
   import { untrack } from 'svelte';
   import { goto } from '$app/navigation';
   import { page } from '$app/state';
-  import BoardHeader, { BOARD_VIEW_PANEL_ID, type BoardView } from '$lib/components/board/BoardHeader.svelte';
-  import CardModal from '$lib/components/board/CardModal.svelte';
-  import KanbanBoard from '$lib/components/board/KanbanBoard.svelte';
   import Spinner from '$lib/components/Spinner.svelte';
   import Timeline from '$lib/components/timeline/Timeline.svelte';
   import { errorMessage } from '$lib/errors';
-  import { board } from '$lib/stores/board.svelte';
+  import { board, type ScopeRef } from '$lib/stores/board.svelte';
+  import BoardHeader, { BOARD_VIEW_PANEL_ID, type BoardView } from './BoardHeader.svelte';
+  import CardModal from './CardModal.svelte';
+  import KanbanBoard from './KanbanBoard.svelte';
+  import ProjectFilterBar from './ProjectFilterBar.svelte';
 
-  const id = $derived(Number(page.params.id));
+  let { ref }: { ref: ScopeRef } = $props();
+
+  const kind = $derived(ref.kind);
+  const id = $derived(ref.id);
   const validId = $derived(Number.isInteger(id) && id > 0);
   const view: BoardView = $derived(page.url.searchParams.get('view') === 'timeline' ? 'timeline' : 'kanban');
 
   // Le store garde l'éventuel tableau précédent : on n'affiche que celui demandé.
-  // Il garde aussi le même tableau quand son rechargement échoue (ex. retour sur un tableau qu'on vient
+  // Il garde aussi le même tableau quand son rechargement échoue (ex. retour sur un pool qu'on vient
   // de quitter → 403) : l'erreur l'emporte alors sur les données périmées.
-  const ready = $derived(validId && board.detail?.board.id === id && !board.error);
+  const ready = $derived(validId && board.ref?.kind === kind && board.ref?.id === id && !board.error);
 
   $effect(() => {
     if (!validId) return;
-    const target = id;
+    const target: ScopeRef = { kind, id };
     untrack(() => board.load(target));
   });
 
@@ -40,41 +45,63 @@
 
   let modalOpen = $state(false);
   let modalCardId = $state<number | null>(null);
+  /** Colonne de la carte en cours de création (null : consultation d'une carte existante). */
+  let draftState = $state<number | null>(null);
 
   function openCard(cardId: number) {
+    draftState = null;
     modalCardId = cardId;
+    modalOpen = true;
+  }
+
+  function createCard(stateId: number) {
+    modalCardId = null;
+    draftState = stateId;
     modalOpen = true;
   }
 
   // ---------- Erreur ----------
 
+  const noun = $derived(kind === 'pool' ? 'ce pool' : 'ce projet');
+
   const failure = $derived.by(() => {
-    if (!validId) return { title: 'Tableau introuvable', text: 'L’adresse ne correspond à aucun tableau.', retry: false };
+    const missing = kind === 'pool' ? 'Pool introuvable' : 'Projet introuvable';
+    if (!validId) return { title: missing, text: 'L’adresse ne correspond à aucun pool ni projet.', retry: false };
     const e = board.error;
     if (!e || ready) return null;
     if (board.errorStatus === 403)
-      return { title: 'Accès refusé', text: 'Vous n’êtes pas membre de ce tableau. Demandez à son propriétaire de vous inviter.', retry: false };
+      return {
+        title: 'Accès refusé',
+        text:
+          kind === 'pool'
+            ? 'Vous n’êtes pas membre de ce pool. Demandez à son propriétaire de vous inviter.'
+            : 'Ce projet appartient à un pool dont vous n’êtes pas membre.',
+        retry: false
+      };
     if (board.errorStatus === 404)
-      return { title: 'Tableau introuvable', text: 'Il a peut-être été supprimé, ou vous en avez été retiré.', retry: false };
-    return { title: 'Impossible de charger le tableau', text: errorMessage(e), retry: true };
+      return { title: missing, text: `Il a peut-être été supprimé, ou vous n’avez plus accès à ${noun}.`, retry: false };
+    return { title: kind === 'pool' ? 'Impossible de charger le pool' : 'Impossible de charger le projet', text: errorMessage(e), retry: true };
   });
 </script>
 
 <svelte:head>
-  <title>{ready && board.detail ? `${board.detail.board.name} · Pool Manager` : 'Pool Manager'}</title>
+  <title>{ready && board.title ? `${board.title} · Pool Manager` : 'Pool Manager'}</title>
 </svelte:head>
 
 <div class="board-page">
   {#if ready}
     <BoardHeader {view} onviewchange={setView} />
+    {#if board.kind === 'pool' && board.activeProjects.length > 1}
+      <ProjectFilterBar />
+    {/if}
     <div class="view" id={BOARD_VIEW_PANEL_ID} role="tabpanel" aria-label={view === 'kanban' ? 'Tableau' : 'Chronologie'}>
       {#if view === 'kanban'}
-        <KanbanBoard onopencard={openCard} />
+        <KanbanBoard onopencard={openCard} oncreatecard={createCard} />
       {:else}
         <Timeline onopencard={openCard} />
       {/if}
     </div>
-    <CardModal cardId={modalCardId} bind:open={modalOpen} />
+    <CardModal bind:cardId={modalCardId} bind:draftState bind:open={modalOpen} />
   {:else if failure}
     <div class="state" role="alert">
       <div class="state-card">
@@ -87,15 +114,15 @@
         <h1>{failure.title}</h1>
         <p>{failure.text}</p>
         <div class="state-actions">
-          <a class="btn" href="/boards">Retour aux tableaux</a>
+          <a class="btn" href="/pools">Retour aux pools</a>
           {#if failure.retry}
-            <button class="btn btn-primary" type="button" onclick={() => board.load(id)}>Réessayer</button>
+            <button class="btn btn-primary" type="button" onclick={() => board.load({ kind, id })}>Réessayer</button>
           {/if}
         </div>
       </div>
     </div>
   {:else}
-    <div class="state loading" role="status" aria-label="Chargement du tableau">
+    <div class="state loading" role="status" aria-label="Chargement">
       <span class="delayed"><Spinner size={16} /></span>
     </div>
   {/if}
@@ -123,7 +150,7 @@
     padding: 24px;
   }
 
-  /* Même échelle que les états vides / d'erreur de la liste des tableaux et de la chronologie. */
+  /* Même échelle que les états vides / d'erreur de la liste des pools et de la chronologie. */
   .state-card {
     display: flex;
     flex-direction: column;
@@ -143,7 +170,7 @@
     color: var(--text-muted);
   }
 
-  /* Chargement impossible (réseau, serveur) : ton « erreur », comme sur la liste des tableaux.
+  /* Chargement impossible (réseau, serveur) : ton « erreur », comme sur la liste des pools.
      Accès refusé / introuvable : ton neutre, ce n'est pas une panne. */
   .state-icon.error {
     background: var(--danger-soft);

@@ -17,12 +17,13 @@ import {
 } from '$lib/dates';
 import type { Card } from '$lib/types/Card';
 import type { Member } from '$lib/types/Member';
+import type { Project } from '$lib/types/Project';
 import type { State } from '$lib/types/State';
 
 // ---------- Réglages ----------
 
 export type Zoom = 'day' | 'week' | 'month';
-export type GroupBy = 'state' | 'assignee' | 'none';
+export type GroupBy = 'project' | 'state' | 'assignee' | 'none';
 
 export const ZOOMS: { value: Zoom; label: string; dayWidth: number }[] = [
   { value: 'day', label: 'Jour', dayWidth: 40 },
@@ -31,6 +32,7 @@ export const ZOOMS: { value: Zoom; label: string; dayWidth: number }[] = [
 ];
 
 export const GROUP_BYS: { value: GroupBy; label: string }[] = [
+  { value: 'project', label: 'Projet' },
   { value: 'state', label: 'État' },
   { value: 'assignee', label: 'Assigné' },
   { value: 'none', label: 'Aucun' }
@@ -45,7 +47,16 @@ export function isZoom(v: unknown): v is Zoom {
 }
 
 export function isGroupBy(v: unknown): v is GroupBy {
-  return v === 'state' || v === 'assignee' || v === 'none';
+  return v === 'project' || v === 'state' || v === 'assignee' || v === 'none';
+}
+
+/**
+ * Regroupement effectif : la préférence enregistrée si elle a un sens pour ce type de tableau
+ * (« Projet » n'en a pas dans une vue projet), sinon « Projet » dans un pool et « État » ailleurs.
+ */
+export function resolveGroupBy(pref: GroupBy | null, kind: 'pool' | 'project' | null): GroupBy {
+  if (pref != null && (pref !== 'project' || kind === 'pool')) return pref;
+  return kind === 'pool' ? 'project' : 'state';
 }
 
 /** Dimensions partagées par les composants (px). */
@@ -70,9 +81,16 @@ export interface Range {
  * De min(début des cartes, aujourd'hui) − 7 j à max(fin des cartes, aujourd'hui) + 35 j,
  * alignée sur des semaines entières (lundi → dimanche), et au moins `minDays` jours.
  * `leadDays` / `trailDays` : jours à garder avant / après aujourd'hui pour pouvoir le placer au quart gauche
- * de la zone visible quel que soit le zoom.
+ * de la zone visible quel que soit le zoom. `keep` : jours à inclure en plus (semaines entières).
  */
-export function computeRange(cards: Card[], todayDay: number, minDays = 70, leadDays = 7, trailDays = 35): Range {
+export function computeRange(
+  cards: Card[],
+  todayDay: number,
+  minDays = 70,
+  leadDays = 7,
+  trailDays = 35,
+  keep: { from: number; to: number } | null = null
+): Range {
   let lo = todayDay;
   let hi = todayDay;
   for (const c of cards) {
@@ -81,8 +99,13 @@ export function computeRange(cards: Card[], todayDay: number, minDays = 70, lead
     if (s != null && s < lo) lo = s;
     if (e != null && e > hi) hi = e;
   }
-  const start = startOfWeek(Math.min(lo - 7, todayDay - leadDays));
+  let start = startOfWeek(Math.min(lo - 7, todayDay - leadDays));
   let end = startOfWeek(Math.max(hi + 35, todayDay + trailDays)) + 6;
+  // Jours à garder dans la plage quoi qu'il arrive (zone ancrée lors d'un changement de zoom).
+  if (keep) {
+    start = Math.min(start, startOfWeek(keep.from));
+    end = Math.max(end, startOfWeek(keep.to) + 6);
+  }
   const min = Math.ceil(Math.max(minDays, 70) / 7) * 7;
   if (end - start + 1 < min) end = start + min - 1;
   return { start, end, days: end - start + 1 };
@@ -200,10 +223,12 @@ export interface TimelineRow {
 export interface TimelineGroup {
   key: string;
   label: string;
-  /** Couleur de l'état (regroupement par état) */
+  /** Couleur de l'état ou du projet */
   color: string | null;
   /** Personne (regroupement par assigné) ; null = « Non assigné » ou autre */
   userId: number | null;
+  /** Code du projet (regroupement par projet) */
+  code: string | null;
   rows: TimelineRow[];
   /** Charge totale en j/h (part de la personne pour un groupe d'assigné) */
   load: number;
@@ -226,7 +251,7 @@ function makeGroup(
   key: string,
   label: string,
   rows: TimelineRow[],
-  opts: { color?: string | null; userId?: number | null } = {}
+  opts: { color?: string | null; userId?: number | null; code?: string | null } = {}
 ): TimelineGroup {
   rows.sort(byStart);
   let load = 0;
@@ -237,16 +262,55 @@ function makeGroup(
     if (spanStart == null || r.start < spanStart) spanStart = r.start;
     if (spanEnd == null || r.end > spanEnd) spanEnd = r.end;
   }
-  return { key, label, color: opts.color ?? null, userId: opts.userId ?? null, rows, load, spanStart, spanEnd };
+  return {
+    key,
+    label,
+    color: opts.color ?? null,
+    userId: opts.userId ?? null,
+    code: opts.code ?? null,
+    rows,
+    load,
+    spanStart,
+    spanEnd
+  };
 }
 
 const collator = new Intl.Collator('fr', { sensitivity: 'base' });
 
 /** Groupes de lignes planifiées (les cartes sans planification vont dans « Non planifiées »). */
-export function buildGroups(cards: Card[], states: State[], members: Member[], groupBy: GroupBy): TimelineGroup[] {
+export function buildGroups(
+  cards: Card[],
+  states: State[],
+  members: Member[],
+  projects: Project[],
+  groupBy: GroupBy
+): TimelineGroup[] {
   if (groupBy === 'none') {
     const rows = cards.map((c) => scheduledRow(c, `c${c.id}`, null)).filter((r): r is TimelineRow => r != null);
     return rows.length ? [makeGroup('all', 'Toutes les cartes', rows)] : [];
+  }
+
+  if (groupBy === 'project') {
+    // Un groupe par projet ayant des cartes planifiées, par nom ; projet inconnu (droits, suppression en cours) en dernier.
+    const byProject = new Map<number, TimelineRow[]>();
+    for (const c of cards) {
+      const r = scheduledRow(c, `p${c.project_id}:${c.id}`, null);
+      if (!r) continue;
+      const list = byProject.get(c.project_id);
+      if (list) list.push(r);
+      else byProject.set(c.project_id, [r]);
+    }
+    const known = new Map(projects.map((p) => [p.id, p]));
+    const groups: TimelineGroup[] = [];
+    const orphans: TimelineRow[] = [];
+    for (const [id, rows] of byProject) {
+      const p = known.get(id);
+      if (p) groups.push(makeGroup(`p${id}`, p.name, rows, { color: p.color, code: p.code }));
+      else orphans.push(...rows);
+    }
+    groups.sort((a, b) => collator.compare(a.label, b.label) || collator.compare(a.code ?? '', b.code ?? ''));
+    if (orphans.length) groups.push(makeGroup('p?', 'Projet inconnu', orphans));
+    return groups;
   }
 
   if (groupBy === 'state') {

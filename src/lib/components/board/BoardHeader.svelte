@@ -1,5 +1,8 @@
 <!--
-  En-tête du tableau : retour, nom (renommable par le propriétaire), choix de la vue, membres.
+  En-tête du tableau ouvert.
+  - Pool : nom (renommable par son propriétaire), « Projets », membres du pool.
+  - Projet : fil « Pool › » s'il est rattaché, pastille de couleur, nom (renommable), code, réglages ;
+    membres du pool s'il en a un (aucun pour un projet autonome).
   Le sélecteur de vue utilise une liste dupliquée « active » découpée par clip-path :
   la couleur du libellé suit exactement l'indicateur pendant qu'il glisse.
 -->
@@ -12,6 +15,8 @@
 <script lang="ts">
   import { tick } from 'svelte';
   import Avatar from '$lib/components/Avatar.svelte';
+  import ProjectFormDialog from '$lib/components/projects/ProjectFormDialog.svelte';
+  import ProjectsDialog from '$lib/components/projects/ProjectsDialog.svelte';
   import { board } from '$lib/stores/board.svelte';
   import MembersDialog from './MembersDialog.svelte';
   import { lastInputWasKeyboard } from '$lib/modality';
@@ -29,8 +34,17 @@
   const index = $derived(Math.max(0, VIEWS.findIndex((v) => v.value === view)));
   const members = $derived(board.members);
   const overflow = $derived(Math.max(0, members.length - MAX_AVATARS));
+  const isPool = $derived(board.kind === 'pool');
+  const project = $derived(board.project);
+  /** Pool du projet ouvert (vue projet rattachée à un pool). */
+  const parentPool = $derived(!isPool ? board.pool : null);
+  /** Pool : son propriétaire renomme. Projet : toute personne y ayant accès (comme le serveur). */
+  const canRename = $derived(isPool ? board.isOwner : project != null);
+  const activeCount = $derived(board.activeProjects.length);
 
   let membersOpen = $state(false);
+  let projectsOpen = $state(false);
+  let settingsOpen = $state(false);
 
   // ---------- Sélecteur de vue ----------
 
@@ -62,10 +76,11 @@
   let draft = $state('');
   let pendingName = $state<string | null>(null);
 
-  const name = $derived(pendingName ?? board.detail?.board.name ?? '');
+  const name = $derived(pendingName ?? board.title);
+  const what = $derived(isPool ? 'le pool' : 'le projet');
 
   function startEdit() {
-    if (!board.isOwner) return;
+    if (!canRename) return;
     draft = name;
     editing = true;
   }
@@ -74,7 +89,7 @@
     if (!editing) return;
     editing = false;
     const value = draft.trim();
-    if (!value || value === board.detail?.board.name) return;
+    if (!value || value === board.title) return;
     pendingName = value; // affiché tout de suite, sans attendre le serveur
     await board.rename(value);
     pendingName = null;
@@ -103,33 +118,71 @@
 
 <header class="board-header">
   <div class="left">
-    <a class="btn btn-ghost btn-sm btn-icon back" href="/boards" aria-label="Retour aux tableaux" {@attach tooltip('Tous les tableaux')}>
+    <a
+      class="btn btn-ghost btn-sm btn-icon back"
+      href={parentPool ? `/pools/${parentPool.id}` : '/pools'}
+      aria-label={parentPool ? `Retour au pool ${parentPool.name}` : 'Retour aux pools'}
+      {@attach tooltip(parentPool ? 'Retour au pool' : 'Tous les pools')}
+    >
       <svg width="14" height="14" viewBox="0 0 16 16" aria-hidden="true">
         <path d="M10 3.5L5.5 8l4.5 4.5" stroke="currentColor" stroke-width="1.6" fill="none" stroke-linecap="round" stroke-linejoin="round" />
       </svg>
     </a>
 
+    {#if parentPool}
+      <nav class="crumb" aria-label="Fil d’Ariane">
+        <a class="crumb-link" href="/pools/{parentPool.id}" title={parentPool.name}>{parentPool.name}</a>
+        <svg class="crumb-sep" width="12" height="12" viewBox="0 0 12 12" aria-hidden="true">
+          <path d="M4.5 2.5L8 6l-3.5 3.5" stroke="currentColor" stroke-width="1.4" fill="none" stroke-linecap="round" stroke-linejoin="round" />
+        </svg>
+      </nav>
+    {/if}
+
+    {#if project}
+      <span class="project-dot" style:background={project.color} aria-hidden="true"></span>
+    {/if}
+
     {#if editing}
       <input
         class="input name-input"
         bind:value={draft}
-        aria-label="Nom du tableau"
+        aria-label={isPool ? 'Nom du pool' : 'Nom du projet'}
         maxlength="120"
         {onkeydown}
         onblur={commit}
         {@attach (n) => { n.focus(); n.select(); }}
       />
-    {:else if board.isOwner}
-      <h1 class="name-wrap">
-        <button bind:this={nameBtn} class="name-btn" type="button" onclick={startEdit} aria-label="{name} — renommer le tableau" {@attach tooltip('Renommer')}>
+    {:else if canRename}
+      <h1 class="title">
+        <button bind:this={nameBtn} class="name-btn" type="button" onclick={startEdit} aria-label="{name} — renommer {what}" {@attach tooltip('Renommer')}>
           {name}
         </button>
       </h1>
     {:else}
-      <h1 class="name" title={name}>{name}</h1>
+      <h1 class="title"><span class="name" title={name}>{name}</span></h1>
     {/if}
 
-    <div class="seg" class:instant role="tablist" aria-label="Vue du tableau" style:--i={index} style:--n={VIEWS.length}>
+    {#if project}
+      <span class="code num" aria-label="Code {project.code}">{project.code}</span>
+      {#if project.archived}
+        <span class="archived">Archivé</span>
+      {/if}
+      <button
+        class="btn btn-ghost btn-sm btn-icon settings"
+        type="button"
+        aria-label="Réglages du projet"
+        onclick={() => (settingsOpen = true)}
+        {@attach tooltip('Réglages du projet')}
+      >
+        <svg width="14" height="14" viewBox="0 0 16 16" aria-hidden="true">
+          <path d="M2.5 4.5h7M12.5 4.5h1M2.5 11.5h1M6.5 11.5h7" stroke="currentColor" stroke-width="1.4" stroke-linecap="round" />
+          <circle cx="11" cy="4.5" r="1.5" stroke="currentColor" stroke-width="1.4" fill="none" />
+          <circle cx="5" cy="11.5" r="1.5" stroke="currentColor" stroke-width="1.4" fill="none" />
+        </svg>
+      </button>
+    {/if}
+
+    <div class="seg" class:instant role="tablist" aria-label="Vue" style:--i={index} style:--n={VIEWS.length}>
       <span class="thumb" aria-hidden="true"></span>
       {#each VIEWS as v, i (v.value)}
         <button
@@ -154,26 +207,50 @@
     </div>
   </div>
 
-  <button class="btn btn-sm members" type="button" onclick={() => (membersOpen = true)} aria-label="Membres du tableau ({members.length})">
-    <span class="stack" aria-hidden="true">
-      {#each members.slice(0, MAX_AVATARS) as m (m.user_id)}
-        <Avatar id={m.user_id} name={m.display_name} size={20} ring />
-      {/each}
-      {#if overflow}
-        <span class="more num">+{overflow}</span>
-      {/if}
-    </span>
-    Membres
-  </button>
+  <div class="right">
+    {#if isPool}
+      <button class="btn btn-sm" type="button" onclick={() => (projectsOpen = true)} aria-label="Projets du pool ({activeCount})">
+        <svg width="13" height="13" viewBox="0 0 16 16" aria-hidden="true">
+          <rect x="2" y="2.5" width="5" height="5" rx="1.2" stroke="currentColor" stroke-width="1.3" fill="none" />
+          <rect x="9" y="2.5" width="5" height="5" rx="1.2" stroke="currentColor" stroke-width="1.3" fill="none" />
+          <rect x="2" y="9.5" width="5" height="5" rx="1.2" stroke="currentColor" stroke-width="1.3" fill="none" />
+          <path d="M11.5 9.5v5M9 12h5" stroke="currentColor" stroke-width="1.3" stroke-linecap="round" />
+        </svg>
+        Projets
+        <span class="badge num" aria-hidden="true">{activeCount}</span>
+      </button>
+    {/if}
+
+    {#if board.pool}
+      <button class="btn btn-sm members" type="button" onclick={() => (membersOpen = true)} aria-label="Membres du pool ({members.length})">
+        <span class="stack" aria-hidden="true">
+          {#each members.slice(0, MAX_AVATARS) as m (m.user_id)}
+            <Avatar id={m.user_id} name={m.display_name} size={20} ring />
+          {/each}
+          {#if overflow}
+            <span class="more num">+{overflow}</span>
+          {/if}
+        </span>
+        Membres
+      </button>
+    {/if}
+  </div>
 </header>
 
-<MembersDialog bind:open={membersOpen} />
+{#if board.pool}
+  <MembersDialog bind:open={membersOpen} />
+{/if}
+{#if isPool}
+  <ProjectsDialog bind:open={projectsOpen} />
+{/if}
+{#if project}
+  <ProjectFormDialog bind:open={settingsOpen} {project} />
+{/if}
 
 <style>
   .board-header {
     display: flex;
     align-items: center;
-    justify-content: space-between;
     gap: 16px;
     /* Même hauteur et mêmes retraits que la barre d'application au-dessus (48 px, 12 px). */
     height: 48px;
@@ -182,15 +259,66 @@
     border-bottom: 1px solid var(--border);
   }
 
+  /* La partie gauche prend toute la place libre ; le nom n'est tronqué que s'il n'y tient plus. */
   .left {
     display: flex;
     align-items: center;
     gap: 8px;
+    flex: 1 1 auto;
     min-width: 0;
+  }
+
+  .right {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    flex: none;
   }
 
   .back {
     flex: none;
+  }
+
+  /* ---------- Fil d'Ariane, nom, code ---------- */
+
+  .crumb {
+    display: flex;
+    align-items: center;
+    gap: 4px;
+    flex: 0 3 auto;
+    min-width: 48px;
+  }
+
+  .crumb-link {
+    min-width: 0;
+    overflow: hidden;
+    color: var(--text-muted);
+    font-size: 14px;
+    font-weight: 500;
+    text-decoration: none;
+    white-space: nowrap;
+    text-overflow: ellipsis;
+    border-radius: 4px;
+    transition: color var(--dur-hover) ease;
+  }
+
+  @media (hover: hover) and (pointer: fine) {
+    .crumb-link:hover {
+      color: var(--text);
+    }
+  }
+
+  .crumb-sep {
+    flex: none;
+    color: var(--text-subtle);
+  }
+
+  .project-dot {
+    flex: none;
+    width: 10px;
+    height: 10px;
+    margin-left: 2px;
+    border-radius: 999px;
   }
 
   h1 {
@@ -199,22 +327,22 @@
     font-weight: 600;
   }
 
-  .name-wrap {
+  .title {
+    display: flex;
+    flex: 0 1 auto;
     min-width: 0;
-    max-width: 420px;
   }
 
   .name {
     min-width: 0;
-    max-width: 420px;
     overflow: hidden;
     white-space: nowrap;
     text-overflow: ellipsis;
   }
 
   .name-btn {
-    display: block;
-    max-width: 100%;
+    flex: 0 1 auto;
+    min-width: 0;
     overflow: hidden;
     white-space: nowrap;
     text-overflow: ellipsis;
@@ -231,6 +359,10 @@
     transition: border-color var(--dur-hover) ease;
   }
 
+  .project-dot + .title .name-btn {
+    margin-left: -6px;
+  }
+
   .name-btn:focus-visible {
     outline: none;
     box-shadow: var(--focus);
@@ -243,13 +375,50 @@
   }
 
   .name-input {
-    width: 320px;
+    flex: 0 1 320px;
+    min-width: 120px;
     height: 30px;
     margin-left: -4px;
     padding: 0 8px;
     font-size: 15px;
     font-weight: 600;
     letter-spacing: -0.01em; /* comme le h1 : le texte ne « respire » pas différemment en édition */
+  }
+
+  .code {
+    flex: none;
+    padding: 1px 6px;
+    border-radius: 4px;
+    background: var(--surface-2);
+    font-size: 11.5px;
+    font-weight: 600;
+    letter-spacing: 0.03em;
+    color: var(--text-muted);
+  }
+
+  .archived {
+    flex: none;
+    padding: 1px 8px;
+    border-radius: 999px;
+    background: var(--surface-2);
+    font-size: 11.5px;
+    font-weight: 500;
+    color: var(--text-muted);
+  }
+
+  .settings {
+    flex: none;
+  }
+
+  .badge {
+    min-width: 18px;
+    padding: 0 5px;
+    border-radius: 999px;
+    background: var(--surface-3);
+    font-size: 11px;
+    font-weight: 600;
+    line-height: 18px;
+    color: var(--text-muted);
   }
 
   /* ---------- Sélecteur de vue ---------- */

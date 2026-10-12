@@ -1,4 +1,4 @@
-<!-- Colonne fantôme en fin de tableau : Entrée crée la colonne et garde la saisie prête pour la suivante. -->
+<!-- Colonne fantôme en fin de Kanban : Entrée crée la colonne et garde la saisie prête pour la suivante. -->
 <script lang="ts">
   import { tick } from 'svelte';
   import { board } from '$lib/stores/board.svelte';
@@ -78,7 +78,7 @@
       Ajouter une colonne
     </button>
     {#if board.states.length === 0}
-      <p class="empty">Ce tableau n’a pas encore de colonne. Créez-en une pour commencer à y ranger des cartes.</p>
+      <p class="empty">{board.kind === 'pool' ? 'Ce pool' : 'Ce projet'} n’a pas encore de colonne. Créez-en une pour commencer à y ranger des cartes.</p>
     {/if}
   {/if}
 </div>

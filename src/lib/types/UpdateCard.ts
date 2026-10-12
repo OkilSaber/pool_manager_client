@@ -3,4 +3,8 @@
 /**
  * Mise à jour partielle : un champ absent n'est pas modifié, `null` efface la valeur.
  */
-export type UpdateCard = { state_id?: number, title?: string, description?: string, priority?: number, estimate_days?: number | null, start_date?: string | null, position?: number, };
+export type UpdateCard = { 
+/**
+ * Déplacer la carte vers un autre projet du même pool (elle reçoit un nouveau numéro)
+ */
+project_id?: number, state_id?: number, title?: string, description?: string, priority?: number, estimate_days?: number | null, start_date?: string | null, position?: number, };

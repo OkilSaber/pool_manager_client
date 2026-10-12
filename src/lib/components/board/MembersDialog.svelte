@@ -1,6 +1,6 @@
 <!--
-  Membres du tableau. Propriétaire : inviter par email, retirer un membre (confirmation en place).
-  Membre : quitter le tableau (confirmation en place).
+  Membres du pool. Propriétaire : inviter par email, retirer un membre (confirmation en place).
+  Membre : quitter le pool (confirmation en place).
 -->
 <script lang="ts">
   import { goto } from '$app/navigation';
@@ -8,7 +8,7 @@
   import Modal from '$lib/components/Modal.svelte';
   import Spinner from '$lib/components/Spinner.svelte';
   import { board } from '$lib/stores/board.svelte';
-  import { boardsCache } from '$lib/stores/boards-cache';
+  import { poolsCache } from '$lib/stores/pools-cache';
   import { session } from '$lib/stores/session.svelte';
   import { toast } from '$lib/stores/toast.svelte';
 
@@ -38,7 +38,7 @@
     if (ok) {
       const added = board.members.find((m) => m.email.toLowerCase() === value);
       email = '';
-      toast.success(`${added?.display_name ?? value} a rejoint le tableau`);
+      toast.success(`${added?.display_name ?? value} a rejoint le pool`);
     }
   }
 
@@ -58,11 +58,11 @@
     removing = null;
     // Les parts restantes des cartes où ce membre était assigné sont ramenées à 100 % par le store, comme sur le serveur.
     if (ok && leaving) {
-      const boardId = board.detail?.board.id;
-      boardsCache.update((list) => list.filter((b) => b.id !== boardId));
+      const poolId = board.pool?.id;
+      poolsCache.update((list) => list.filter((p) => p.id !== poolId));
       open = false;
-      toast.info('Vous avez quitté le tableau');
-      goto('/boards');
+      toast.info('Vous avez quitté le pool');
+      goto('/pools');
     }
   }
 
@@ -72,7 +72,7 @@
   }
 </script>
 
-<Modal bind:open title="Membres" width={480} {onclose}>
+<Modal bind:open title="Membres du pool" width={480} {onclose}>
   {#if board.isOwner}
     <form class="invite" onsubmit={invite}>
       <label class="label" for="{uid}-email">Inviter par email</label>
@@ -97,7 +97,7 @@
     </form>
   {/if}
 
-  <ul class="list" aria-label="Membres du tableau">
+  <ul class="list" aria-label="Membres du pool">
     {#each members as m (m.user_id)}
       <li class="row">
         <Avatar id={m.user_id} name={m.display_name} size={28} />
@@ -137,7 +137,7 @@
         onclick={() => me != null && remove(me)}
       >
         {#if removing === me}<Spinner size={12} />{/if}
-        {confirmId === me ? 'Confirmer : quitter le tableau' : 'Quitter le tableau'}
+        {confirmId === me ? 'Confirmer : quitter le pool' : 'Quitter le pool'}
       </button>
     {/if}
     <span class="count muted num">{members.length} membre{members.length > 1 ? 's' : ''}</span>

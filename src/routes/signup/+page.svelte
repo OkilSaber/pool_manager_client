@@ -60,8 +60,8 @@
     pending = true;
     try {
       await session.signup(email.trim(), displayName.trim(), password);
-      // replaceState, comme la garde du layout (/signup → /boards dès que session.user est posé).
-      await goto('/boards', { replaceState: true });
+      // replaceState, comme la garde du layout (/signup → /pools dès que session.user est posé).
+      await goto('/pools', { replaceState: true });
     } catch (err) {
       error = errorMessage(err);
       unreachable = err instanceof ApiError && err.status === 0;
@@ -81,7 +81,7 @@
   <title>Créer un compte · Pool Manager</title>
 </svelte:head>
 
-<AuthCard title="Créer un compte" subtitle="Rejoignez les tableaux de votre équipe.">
+<AuthCard title="Créer un compte" subtitle="Rejoignez les pools et projets de votre équipe.">
   <form class="form" onsubmit={submit} novalidate>
     <div class="field">
       <label class="label" for="signup-name">Nom affiché</label>

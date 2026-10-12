@@ -8,9 +8,9 @@
 <header class="app-header">
   <a
     class="brand"
-    href="/boards"
-    aria-label="Pool Manager — mes tableaux"
-    aria-current={page.url.pathname === '/boards' ? 'page' : undefined}
+    href="/pools"
+    aria-label="Pool Manager — Accueil"
+    aria-current={page.url.pathname === '/pools' ? 'page' : undefined}
   >
     <Logo size={20} />
     <span class="brand-name">Pool Manager</span>

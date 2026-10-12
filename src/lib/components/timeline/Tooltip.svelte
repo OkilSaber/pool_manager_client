@@ -32,6 +32,9 @@
   } = $props();
 
   const cardState = $derived(card ? board.states.find((s) => s.id === card.state_id) : undefined);
+  /** Projet affiché dans un pool seulement (une vue projet n'en montre qu'un : la référence suffit). */
+  const project = $derived(card && board.kind === 'pool' ? board.projectOf(card.project_id) : undefined);
+  const ref = $derived(card ? board.cardKey(card) : '');
   const start = $derived(toDay(card?.schedule?.start));
   const end = $derived(toDay(card?.schedule?.end));
 </script>
@@ -47,6 +50,14 @@
   style:transform-origin="{originX}px {below ? 'top' : 'bottom'}"
 >
   {#if card}
+    <div class="ref">
+      {#if project}
+        <span class="dot" style:background={project.color}></span>
+        <span class="project">{project.name}</span>
+        <span class="sep" aria-hidden="true">·</span>
+      {/if}
+      <span class="num">{ref}</span>
+    </div>
     <div class="title">{card.title}</div>
     <div class="meta">
       <PriorityBadge value={card.priority} showName />
@@ -111,6 +122,34 @@
 
   .tip[data-instant] {
     transition-duration: 0ms;
+  }
+
+  /* Projet et référence au-dessus du titre, discrets : un repère, pas le sujet. */
+  .ref {
+    display: flex;
+    align-items: center;
+    gap: 6px;
+    min-width: 0;
+    margin-bottom: -4px;
+    color: var(--text-muted);
+    font-size: 11.5px;
+    font-weight: 500;
+    white-space: nowrap;
+  }
+
+  .project {
+    min-width: 0;
+    overflow: hidden;
+    text-overflow: ellipsis;
+  }
+
+  .sep {
+    flex: none;
+    color: var(--text-subtle);
+  }
+
+  .ref .num {
+    flex: none;
   }
 
   /* Titre long : 3 lignes au plus, l'infobulle reste un aperçu. */

@@ -1,1 +1,1 @@
-<!-- Redirection gérée par la garde du layout (/boards ou /login). -->
+<!-- Redirection gérée par la garde du layout (/pools ou /login). -->

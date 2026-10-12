@@ -1,4 +1,4 @@
-// État du tableau ouvert. Les mutations sont optimistes : l'UI bouge tout de suite,
+// État du tableau ouvert : un pool (cartes de tous ses projets) ou un projet (ses seules cartes). Les mutations sont optimistes : l'UI bouge tout de suite,
 // puis la réponse serveur fait foi ; en cas d'erreur on revient en arrière avec un toast.
 //
 // Modifications d'une même carte : envoyées l'une après l'autre (le serveur les applique dans l'ordre où
@@ -10,14 +10,19 @@ import { untrack } from 'svelte';
 import { api, ApiError } from '$lib/api';
 import { computeSchedule } from '$lib/dates';
 import type { Assignee } from '$lib/types/Assignee';
-import type { BoardDetail } from '$lib/types/BoardDetail';
 import type { Card } from '$lib/types/Card';
 import type { CreateCard } from '$lib/types/CreateCard';
+import type { CreateProject } from '$lib/types/CreateProject';
 import type { Member } from '$lib/types/Member';
+import type { Pool } from '$lib/types/Pool';
+import type { Project } from '$lib/types/Project';
+import type { ScopeDetail } from '$lib/types/ScopeDetail';
+import type { ScopeKind } from '$lib/types/ScopeKind';
 import type { State } from '$lib/types/State';
 import type { UpdateCard } from '$lib/types/UpdateCard';
+import type { UpdateProject } from '$lib/types/UpdateProject';
 import type { UpdateState } from '$lib/types/UpdateState';
-import { boardsCache } from './boards-cache';
+import { poolsCache } from './pools-cache';
 import { toast } from './toast.svelte';
 
 const byPosition = <T extends { position: number; id: number }>(a: T, b: T) => a.position - b.position || a.id - b.id;
@@ -31,7 +36,7 @@ export function positionBetween(prev?: number, next?: number): number {
 }
 
 /**
- * Miroir de `renormalize` (crates/server/src/routes/members.rs) : parts restantes ramenées à 100 %
+ * Miroir de `renormalize` (crates/server/src/scope.rs) : parts restantes ramenées à 100 %
  * après le retrait d'un assigné, par la méthode du plus fort reste (à égalité : plus grosse part, puis plus
  * petit id). Liste vide ou totalisant déjà 100 : inchangée. Ordre du serveur : part décroissante, puis id.
  */
@@ -52,23 +57,61 @@ function renormalize(rest: Assignee[]): Assignee[] {
   return shares.map(({ user_id, pct }) => ({ user_id, pct })).sort((a, b) => b.pct - a.pct || a.user_id - b.user_id);
 }
 
+export interface ScopeRef {
+  kind: ScopeKind;
+  id: number;
+}
+
+const FILTER_KEY = (poolId: number) => `pm.filter.pool.${poolId}`;
+
+function scopeId(d: ScopeDetail | null): ScopeRef | null {
+  if (!d) return null;
+  const id = d.kind === 'pool' ? d.pool?.id : d.project?.id;
+  return id == null ? null : { kind: d.kind, id };
+}
+
+function sameScope(a: ScopeRef | null, b: ScopeRef | null): boolean {
+  return !!a && !!b && a.kind === b.kind && a.id === b.id;
+}
+
 class BoardStore {
-  detail = $state<BoardDetail | null>(null);
+  detail = $state<ScopeDetail | null>(null);
   loading = $state(false);
   error = $state<string | null>(null);
-  /** Statut HTTP de l'échec de chargement (403 : pas membre, 404 : introuvable ; 0 : serveur injoignable). */
+  /** Statut HTTP de l'échec de chargement (403 : pas d'accès, 404 : introuvable ; 0 : serveur injoignable). */
   errorStatus = $state<number | null>(null);
+  /** Projets affichés dans un pool (vide = tous) ; mémorisé par pool. */
+  projectFilter = $state<number[]>([]);
 
+  kind: ScopeKind | null = $derived(this.detail?.kind ?? null);
+  pool: Pool | null = $derived(this.detail?.pool ?? null);
+  /** Projet ouvert (vue projet uniquement). */
+  project: Project | null = $derived(this.detail?.kind === 'project' ? (this.detail.project ?? null) : null);
+  /** Projets du pool (archivés compris) ou le projet ouvert. */
+  projects: Project[] = $derived(this.detail?.projects ?? []);
+  /** Projets dans lesquels on peut créer des cartes. */
+  activeProjects: Project[] = $derived(this.projects.filter((p) => !p.archived));
   states: State[] = $derived(this.detail ? [...this.detail.states].sort(byPosition) : []);
   members: Member[] = $derived(this.detail?.members ?? []);
   cards: Card[] = $derived(this.detail?.cards ?? []);
-  isOwner: boolean = $derived(this.detail?.board.role === 'owner');
+  /** Cartes après filtre par projet (pool) : ce que montrent le Kanban et la chronologie. */
+  visibleCards: Card[] = $derived(
+    this.kind === 'pool' && this.projectFilter.length ? this.cards.filter((c) => this.projectFilter.includes(c.project_id)) : this.cards
+  );
+  /** Gestion du pool (renommer, membres) : propriétaire du pool. Projet sans pool : on en est forcément le propriétaire. */
+  isOwner: boolean = $derived(this.pool ? this.pool.role === 'owner' : this.kind === 'project');
+  /** Titre du tableau ouvert. */
+  title: string = $derived(this.kind === 'pool' ? (this.pool?.name ?? '') : (this.project?.name ?? ''));
 
   /** Incrémenté à chaque chargement (et à `reset`) : la réponse d'un chargement dépassé est ignorée. */
   private loadToken = 0;
 
+  get ref(): ScopeRef | null {
+    return scopeId(this.detail);
+  }
+
   cardsInState(stateId: number): Card[] {
-    return this.cards.filter((c) => c.state_id === stateId).sort(byPosition);
+    return this.visibleCards.filter((c) => c.state_id === stateId).sort(byPosition);
   }
 
   card(id: number): Card | undefined {
@@ -79,16 +122,56 @@ class BoardStore {
     return this.members.find((m) => m.user_id === userId);
   }
 
-  /** Charge un tableau. Appelable depuis un `$effect` : l'état courant y est lu sans être suivi. */
-  async load(id: number) {
+  projectOf(id: number): Project | undefined {
+    return this.projects.find((p) => p.id === id);
+  }
+
+  /** Référence lisible d'une carte : `SITE-12`. */
+  cardKey(card: Card): string {
+    const code = this.projectOf(card.project_id)?.code ?? '?';
+    return `${code}-${card.number}`;
+  }
+
+  setProjectFilter(ids: number[]) {
+    this.projectFilter = ids;
+    const pool = this.pool;
+    if (this.kind === 'pool' && pool) {
+      if (ids.length) localStorage.setItem(FILTER_KEY(pool.id), JSON.stringify(ids));
+      else localStorage.removeItem(FILTER_KEY(pool.id));
+    }
+  }
+
+  private restoreFilter(d: ScopeDetail) {
+    if (d.kind !== 'pool' || !d.pool) {
+      this.projectFilter = [];
+      return;
+    }
+    try {
+      const saved = JSON.parse(localStorage.getItem(FILTER_KEY(d.pool.id)) ?? '[]');
+      const known = new Set(d.projects.filter((p) => !p.archived).map((p) => p.id));
+      this.projectFilter = Array.isArray(saved) ? saved.filter((id): id is number => typeof id === 'number' && known.has(id)) : [];
+    } catch {
+      this.projectFilter = [];
+    }
+  }
+
+  private fetch(ref: ScopeRef): Promise<ScopeDetail> {
+    return ref.kind === 'pool' ? api.getPool(ref.id) : api.getProject(ref.id);
+  }
+
+  /** Charge un pool ou un projet. Appelable depuis un `$effect` : l'état courant y est lu sans être suivi. */
+  async load(ref: ScopeRef) {
     const token = ++this.loadToken;
-    if (untrack(() => this.detail?.board.id) !== id) this.detail = null;
+    if (!sameScope(untrack(() => this.ref), ref)) this.detail = null;
     this.loading = true;
     this.error = null;
     this.errorStatus = null;
     try {
-      const detail = await api.getBoard(id);
-      if (token === this.loadToken) this.detail = detail;
+      const detail = await this.fetch(ref);
+      if (token === this.loadToken) {
+        this.restoreFilter(detail);
+        this.detail = detail;
+      }
     } catch (e) {
       if (token === this.loadToken) {
         this.error = e instanceof Error ? e.message : String(e);
@@ -101,11 +184,14 @@ class BoardStore {
 
   /** Recharge le tableau ouvert (lève l'erreur réseau éventuelle). Ignoré si un autre tableau a été ouvert entre-temps. */
   async refresh() {
-    const id = this.detail?.board.id;
-    if (id == null) return;
+    const ref = this.ref;
+    if (!ref) return;
     const token = this.loadToken;
-    const detail = await api.getBoard(id);
-    if (token === this.loadToken && this.detail?.board.id === id) this.detail = detail;
+    const detail = await this.fetch(ref);
+    if (token === this.loadToken && sameScope(this.ref, ref)) {
+      this.restoreFilter(detail);
+      this.detail = detail;
+    }
   }
 
   /** Oublie le tableau ouvert (déconnexion, changement de serveur) ; les chargements en vol sont ignorés. */
@@ -115,6 +201,7 @@ class BoardStore {
     this.loading = false;
     this.error = null;
     this.errorStatus = null;
+    this.projectFilter = [];
   }
 
   // ---------- Cartes : file de requêtes par carte ----------
@@ -160,12 +247,12 @@ class BoardStore {
     if (i >= 0) this.detail.cards[i] = card;
   }
 
-  async createCard(input: CreateCard): Promise<Card | null> {
+  async createCard(projectId: number, input: CreateCard): Promise<Card | null> {
     if (!this.detail) return null;
-    const boardId = this.detail.board.id;
+    const ref = this.ref;
     try {
-      const card = await api.createCard(boardId, input);
-      if (this.detail?.board.id === boardId && !this.card(card.id)) this.detail.cards.push(card);
+      const card = await api.createCard(projectId, input);
+      if (sameScope(this.ref, ref) && this.detail && !this.card(card.id)) this.detail.cards.push(card);
       return card;
     } catch (e) {
       toast.error(e);
@@ -179,6 +266,7 @@ class BoardStore {
     const snapshot = $state.snapshot(before) as Card;
     const optimistic: Card = { ...snapshot };
     if (patch.state_id !== undefined) optimistic.state_id = patch.state_id;
+    if (patch.project_id !== undefined) optimistic.project_id = patch.project_id;
     if (patch.position !== undefined) optimistic.position = patch.position;
     if (patch.title !== undefined) optimistic.title = patch.title;
     if (patch.description !== undefined) optimistic.description = patch.description;
@@ -238,7 +326,7 @@ class BoardStore {
 
   async deleteCard(id: number): Promise<boolean> {
     if (!this.detail) return false;
-    const boardId = this.detail.board.id;
+    const ref = this.ref;
     const target = this.card(id);
     if (!target) return false;
     const removed = $state.snapshot(target) as Card;
@@ -251,7 +339,7 @@ class BoardStore {
       return true;
     } catch (e) {
       // On ne remet que cette carte : les autres ont pu changer pendant la requête.
-      if (this.detail?.board.id === boardId && !this.card(id)) this.detail.cards.push(removed);
+      if (sameScope(this.ref, ref) && this.detail && !this.card(id)) this.detail.cards.push(removed);
       if (this.cardStale.delete(id)) void this.resync(id);
       toast.error(e);
       return false;
@@ -262,10 +350,16 @@ class BoardStore {
 
   async createState(name: string, color?: string): Promise<State | null> {
     if (!this.detail) return null;
-    const boardId = this.detail.board.id;
+    const ref = this.ref;
+    // Colonnes du pool (vue pool, ou projet rattaché), sinon colonnes propres du projet autonome.
+    const poolId = this.pool?.id;
+    const projectId = this.project?.id;
     try {
-      const state = await api.createState(boardId, { name, color });
-      if (this.detail?.board.id === boardId) this.detail.states.push(state);
+      const state =
+        poolId != null
+          ? await api.createPoolState(poolId, { name, color })
+          : await api.createProjectState(projectId!, { name, color });
+      if (sameScope(this.ref, ref) && this.detail) this.detail.states.push(state);
       return state;
     } catch (e) {
       toast.error(e);
@@ -304,15 +398,65 @@ class BoardStore {
     }
   }
 
-  // ---------- Tableau & membres ----------
+  // ---------- Pool, projets & membres ----------
 
+  /** Renomme le tableau ouvert : le pool, ou le projet. */
   async rename(name: string): Promise<boolean> {
-    if (!this.detail) return false;
-    const boardId = this.detail.board.id;
+    if (this.kind === 'project' && this.project) return this.updateProject(this.project.id, { name });
+    const pool = this.pool;
+    if (!this.detail || !pool) return false;
     try {
-      const updated = await api.renameBoard(boardId, name);
-      if (this.detail?.board.id === boardId) this.detail.board = updated;
-      boardsCache.update((list) => list.map((b) => (b.id === boardId ? { ...b, name: updated.name } : b)));
+      const updated = await api.renamePool(pool.id, name);
+      if (this.detail?.pool?.id === pool.id) this.detail.pool = updated;
+      poolsCache.update((list) => list.map((p) => (p.id === pool.id ? { ...p, name: updated.name } : p)));
+      return true;
+    } catch (e) {
+      toast.error(e);
+      return false;
+    }
+  }
+
+  async createProject(input: CreateProject): Promise<Project | null> {
+    try {
+      const project = await api.createProject(input);
+      if (this.detail && this.kind === 'pool' && project.pool_id === this.pool?.id) this.detail.projects.push(project);
+      return project;
+    } catch (e) {
+      toast.error(e);
+      return null;
+    }
+  }
+
+  /**
+   * Modifie un projet. Un changement de pool ou d'archivage change les cartes et colonnes visibles :
+   * le tableau est alors rechargé (et quitté s'il n'est plus accessible, à la charge de l'appelant).
+   */
+  async updateProject(id: number, patch: UpdateProject): Promise<boolean> {
+    try {
+      const updated = await api.updateProject(id, patch);
+      if (!this.detail) return true;
+      if (patch.pool_id !== undefined || patch.archived !== undefined) {
+        await this.refresh().catch(() => {});
+        return true;
+      }
+      const i = this.detail.projects.findIndex((p) => p.id === id);
+      if (i >= 0) this.detail.projects[i] = updated;
+      if (this.detail.project?.id === id) this.detail.project = updated;
+      return true;
+    } catch (e) {
+      toast.error(e);
+      return false;
+    }
+  }
+
+  async deleteProject(id: number): Promise<boolean> {
+    try {
+      await api.deleteProject(id);
+      if (this.detail && this.kind === 'pool') {
+        this.detail.projects = this.detail.projects.filter((p) => p.id !== id);
+        this.detail.cards = this.detail.cards.filter((c) => c.project_id !== id);
+        if (this.projectFilter.includes(id)) this.setProjectFilter(this.projectFilter.filter((p) => p !== id));
+      }
       return true;
     } catch (e) {
       toast.error(e);
@@ -321,11 +465,11 @@ class BoardStore {
   }
 
   async addMember(email: string): Promise<boolean> {
-    if (!this.detail) return false;
-    const boardId = this.detail.board.id;
+    const pool = this.pool;
+    if (!this.detail || !pool) return false;
     try {
-      const member = await api.addMember(boardId, email);
-      if (this.detail?.board.id === boardId) this.detail.members.push(member);
+      const member = await api.addMember(pool.id, email);
+      if (this.detail?.pool?.id === pool.id) this.detail.members.push(member);
       return true;
     } catch (e) {
       toast.error(e);
@@ -334,16 +478,16 @@ class BoardStore {
   }
 
   /**
-   * Retire un membre (ou soi-même : quitter le tableau). Comme le serveur, ses assignations disparaissent
+   * Retire un membre du pool (ou soi-même : quitter le pool). Comme le serveur, ses assignations disparaissent
    * et les parts restantes de chaque carte concernée sont ramenées à 100 %.
    */
   async removeMember(userId: number): Promise<boolean> {
-    if (!this.detail) return false;
-    const boardId = this.detail.board.id;
+    const pool = this.pool;
+    if (!this.detail || !pool) return false;
     try {
-      await api.removeMember(boardId, userId);
+      await api.removeMember(pool.id, userId);
       // Miroir local de ce que fait le serveur (évite un rechargement, et un 403 si on vient de quitter).
-      if (this.detail?.board.id !== boardId) return true;
+      if (this.detail?.pool?.id !== pool.id) return true;
       this.detail.members = this.detail.members.filter((m) => m.user_id !== userId);
       for (const c of this.detail.cards) {
         if (c.assignees.some((a) => a.user_id === userId)) {

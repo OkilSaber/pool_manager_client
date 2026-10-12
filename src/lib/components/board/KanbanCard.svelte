@@ -6,15 +6,12 @@
   import Avatar from '$lib/components/Avatar.svelte';
   import PriorityBadge from '$lib/components/PriorityBadge.svelte';
   import { dayOfMonth, formatShort, toDay } from '$lib/dates';
-  import { DUR, reducedMotion } from '$lib/motion';
   import { board } from '$lib/stores/board.svelte';
   import type { Card } from '$lib/types/Card';
   import { fmtEstimate, fmtPct, fmtWorkingDays } from '$lib/format';
   import { tooltip } from '$lib/tooltip';
 
-  let { card, fresh = false }: { card: Card; fresh?: boolean } = $props();
-
-  let el: HTMLElement;
+  let { card }: { card: Card } = $props();
 
   const MAX_AVATARS = 3;
 
@@ -43,25 +40,19 @@
   const hasDescription = $derived(card.description.trim().length > 0);
   const hasMeta = $derived(card.estimate_days != null || span != null || people.length > 0);
 
-  // Carte tout juste créée à la souris : courte apparition (jamais pour une création au clavier).
-  $effect(() => {
-    if (!fresh || !el) return;
-    const still = reducedMotion();
-    el.animate(
-      still
-        ? [{ opacity: 0 }, { opacity: 1 }]
-        : [
-            { opacity: 0, transform: 'translateY(4px)' },
-            { opacity: 1, transform: 'none' }
-          ],
-      { duration: DUR.pop, easing: 'cubic-bezier(0.23, 1, 0.32, 1)' }
-    );
-  });
+  // Référence `CODE-n` ; en vue pool, avec la pastille du projet (les cartes de plusieurs projets s'y mêlent).
+  const project = $derived(board.projectOf(card.project_id));
+  const key = $derived(board.cardKey(card));
+  const inPool = $derived(board.kind === 'pool');
 </script>
 
-<article class="card" bind:this={el}>
+<article class="card">
   <div class="top">
     <PriorityBadge value={card.priority} />
+    <span class="key num" class:pool={inPool} {@attach tooltip(inPool && project ? project.name : null)}>
+      {#if inPool && project}<span class="key-dot" style:background={project.color} aria-hidden="true"></span>{/if}
+      {key}
+    </span>
     {#if hasDescription}
       <svg class="desc-icon" width="14" height="14" viewBox="0 0 16 16" aria-label="Contient une description" role="img">
         <path d="M3 4.5h10M3 8h10M3 11.5h6" stroke="currentColor" stroke-width="1.4" stroke-linecap="round" fill="none" />
@@ -152,12 +143,40 @@
   .top {
     display: flex;
     align-items: center;
-    justify-content: space-between;
     min-height: 20px;
   }
 
   .desc-icon {
+    flex: none;
     color: var(--text-subtle);
+  }
+
+  .key {
+    display: inline-flex;
+    align-items: center;
+    gap: 5px;
+    min-width: 0;
+    margin-left: auto;
+    font-size: 11.5px;
+    font-weight: 500;
+    letter-spacing: 0.02em;
+    color: var(--text-subtle);
+    white-space: nowrap;
+  }
+
+  .key.pool {
+    color: var(--text-muted);
+  }
+
+  .key + .desc-icon {
+    margin-left: 6px;
+  }
+
+  .key-dot {
+    flex: none;
+    width: 7px;
+    height: 7px;
+    border-radius: 999px;
   }
 
   .title {

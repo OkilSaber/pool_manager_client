@@ -1,18 +1,16 @@
 <!--
   Colonne du Kanban (= un état) : en-tête (poignée de glisser, nom, compteurs, menu),
-  liste de cartes glissables, ajout rapide en pied.
+  liste de cartes glissables suivie du bouton « Ajouter une carte » (ouvre la modale de carte en création).
   La liste locale `items` suit le store, sauf pendant un glisser où elle porte l'emplacement fantôme.
 -->
 <script lang="ts">
   import { dndzone, dragHandle, SHADOW_ITEM_MARKER_PROPERTY_NAME, SOURCES, TRIGGERS, type DndEvent } from 'svelte-dnd-action';
   import { tick } from 'svelte';
   import { flip } from 'svelte/animate';
-  import { SvelteSet } from 'svelte/reactivity';
   import { easeOutSoft, reducedMotion } from '$lib/motion';
   import { board, positionBetween } from '$lib/stores/board.svelte';
   import type { Card } from '$lib/types/Card';
   import type { State } from '$lib/types/State';
-  import CardComposer from './CardComposer.svelte';
   import ColumnMenu from './ColumnMenu.svelte';
   import KanbanCard from './KanbanCard.svelte';
   import { cardDrag } from './dnd.svelte';
@@ -23,15 +21,17 @@
 
   type CardItem = Card & { isDndShadowItem?: boolean };
 
-  let { column, onopencard }: { column: State; onopencard: (cardId: number) => void } = $props();
+  let {
+    column,
+    onopencard,
+    oncreatecard
+  }: { column: State; onopencard: (cardId: number) => void; oncreatecard: (stateId: number) => void } = $props();
 
   const FLIP = reducedMotion() ? 0 : 180;
   /** Déplacements déclenchés au clavier (glisser à l'Espace + flèches, suppression…) : jamais animés. */
   const flipMs = () => (cardDrag.keyboard || lastInputWasKeyboard() ? 0 : FLIP);
 
   let items = $state.raw<CardItem[]>([]);
-  let body = $state<HTMLElement>();
-  const fresh = new SvelteSet<number>();
 
   // Suit le store hors glisser (le store est optimiste : après un dépôt il a déjà le bon ordre, pas de saut).
   $effect.pre(() => {
@@ -98,18 +98,6 @@
 
   function label(card: CardItem): string {
     return `${priority(card.priority).label} · ${card.title}`;
-  }
-
-  // ---------- Création ----------
-
-  async function oncreated(id: number, viaPointer: boolean) {
-    // Mouvement réduit : KanbanCard garde le fondu et retire le déplacement.
-    if (viaPointer) {
-      fresh.add(id);
-      setTimeout(() => fresh.delete(id), 1000);
-    }
-    await tick();
-    body?.scrollTo({ top: body.scrollHeight });
   }
 
   // ---------- Renommage ----------
@@ -192,13 +180,26 @@
           <span class="total num" {@attach tooltip('Charge totale de la colonne')}>{fmtEstimate(total)}</span>
         {/if}
       </div>
+      <button
+        class="btn btn-ghost btn-sm btn-icon add-head"
+        type="button"
+        aria-label="Ajouter une carte dans {column.name}"
+        onclick={() => oncreatecard(column.id)}
+        {@attach tooltip('Ajouter une carte')}
+      >
+        <svg width="12" height="12" viewBox="0 0 12 12" aria-hidden="true">
+          <path d="M6 1.5v9M1.5 6h9" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" />
+        </svg>
+      </button>
       <ColumnMenu {column} cardCount={count} onrename={startRename} />
     {/if}
   </header>
 
-  <div class="body" bind:this={body}>
+  <div class="body">
     <div
       class="zone"
+      class:grow={cardDrag.active}
+      class:empty-zone={items.length === 0}
       aria-label={column.name}
       use:dndzone={{
         items,
@@ -222,7 +223,7 @@
           onclick={() => open(card)}
           onkeydown={(e) => onkeydown(e, card)}
         >
-          <KanbanCard {card} fresh={fresh.has(card.id)} />
+          <KanbanCard {card} />
         </div>
       {/each}
     </div>
@@ -235,11 +236,14 @@
         <span class="sub">Glissez une carte ici ou ajoutez-en une.</span>
       </div>
     {/if}
+    <!-- Juste après la dernière carte (et non en pied de colonne) : la cible suit le contenu. -->
+    <button class="btn btn-ghost btn-sm add" type="button" onclick={() => oncreatecard(column.id)}>
+      <svg width="12" height="12" viewBox="0 0 12 12" aria-hidden="true">
+        <path d="M6 1.5v9M1.5 6h9" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" />
+      </svg>
+      Ajouter une carte
+    </button>
   </div>
-
-  <footer class="foot">
-    <CardComposer stateId={column.id} stateName={column.name} {oncreated} />
-  </footer>
 </section>
 
 <style>
@@ -367,13 +371,25 @@
     padding: 0 8px;
   }
 
+  /*
+   * Hors glisser, la zone suit son contenu pour que « Ajouter une carte » vienne juste sous la dernière carte.
+   * Pendant un glisser, elle s'étire jusqu'en bas : toute la hauteur libre de la colonne reste une cible de dépôt.
+   */
   .zone {
     display: flex;
     flex-direction: column;
     gap: 8px;
+    flex: 0 0 auto;
+    min-height: 40px;
+    padding: 2px 0 6px;
+  }
+
+  .zone.empty-zone {
+    min-height: 96px;
+  }
+
+  .zone.grow {
     flex: 1 0 auto;
-    min-height: 72px;
-    padding: 2px 0 8px;
   }
 
   .zone:focus-visible {
@@ -437,10 +453,18 @@
     color: var(--text-subtle);
   }
 
-  /* ---------- Pied ---------- */
+  /* ---------- Ajout ---------- */
 
-  .foot {
+  .add {
     flex: none;
-    padding: 6px 8px 8px;
+    width: 100%;
+    justify-content: flex-start;
+    height: 30px;
+    margin-bottom: 8px;
+    color: var(--text-muted);
+  }
+
+  .add-head {
+    flex: none;
   }
 </style>

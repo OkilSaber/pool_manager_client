@@ -16,7 +16,14 @@
 
   type ColumnItem = State & { isDndShadowItem?: boolean };
 
-  let { onopencard }: { onopencard: (cardId: number) => void } = $props();
+  let {
+    onopencard,
+    oncreatecard
+  }: {
+    onopencard: (cardId: number) => void;
+    /** Ouvre la modale de carte en création dans la colonne `stateId`. */
+    oncreatecard: (stateId: number) => void;
+  } = $props();
 
   configureDnd();
 
@@ -71,7 +78,7 @@
   <div class="track">
     <div
       class="columns"
-      aria-label="Colonnes du tableau"
+      aria-label="Colonnes"
       use:dragHandleZone={{
         items: columns,
         type: 'column',
@@ -87,7 +94,7 @@
           {#if isShadow(column)}
             <div class="col-placeholder"></div>
           {:else}
-            <KanbanColumn {column} {onopencard} />
+            <KanbanColumn {column} {onopencard} {oncreatecard} />
           {/if}
         </div>
       {/each}

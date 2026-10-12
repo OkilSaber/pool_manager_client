@@ -4,14 +4,17 @@
 
 import type { Assignee } from './types/Assignee';
 import type { AuthResponse } from './types/AuthResponse';
-import type { Board } from './types/Board';
-import type { BoardDetail } from './types/BoardDetail';
 import type { Card } from './types/Card';
 import type { CreateCard } from './types/CreateCard';
+import type { CreateProject } from './types/CreateProject';
 import type { CreateState } from './types/CreateState';
 import type { Member } from './types/Member';
+import type { Pool } from './types/Pool';
+import type { Project } from './types/Project';
+import type { ScopeDetail } from './types/ScopeDetail';
 import type { State } from './types/State';
 import type { UpdateCard } from './types/UpdateCard';
+import type { UpdateProject } from './types/UpdateProject';
 import type { UpdateState } from './types/UpdateState';
 import type { User } from './types/User';
 
@@ -134,20 +137,27 @@ export const api = {
   logout: () => request<void>('POST', '/auth/logout'),
   me: () => request<User>('GET', '/me', undefined, QUICK_TIMEOUT_MS),
 
-  listBoards: () => request<Board[]>('GET', '/boards'),
-  createBoard: (name: string) => request<Board>('POST', '/boards', { name }),
-  getBoard: (id: number) => request<BoardDetail>('GET', `/boards/${id}`),
-  renameBoard: (id: number, name: string) => request<Board>('PATCH', `/boards/${id}`, { name }),
-  deleteBoard: (id: number) => request<void>('DELETE', `/boards/${id}`),
+  listPools: () => request<Pool[]>('GET', '/pools'),
+  createPool: (name: string) => request<Pool>('POST', '/pools', { name }),
+  getPool: (id: number) => request<ScopeDetail>('GET', `/pools/${id}`),
+  renamePool: (id: number, name: string) => request<Pool>('PATCH', `/pools/${id}`, { name }),
+  deletePool: (id: number) => request<void>('DELETE', `/pools/${id}`),
 
-  addMember: (boardId: number, email: string) => request<Member>('POST', `/boards/${boardId}/members`, { email }),
-  removeMember: (boardId: number, userId: number) => request<void>('DELETE', `/boards/${boardId}/members/${userId}`),
+  addMember: (poolId: number, email: string) => request<Member>('POST', `/pools/${poolId}/members`, { email }),
+  removeMember: (poolId: number, userId: number) => request<void>('DELETE', `/pools/${poolId}/members/${userId}`),
 
-  createState: (boardId: number, input: CreateState) => request<State>('POST', `/boards/${boardId}/states`, input),
+  listProjects: () => request<Project[]>('GET', '/projects'),
+  createProject: (input: CreateProject) => request<Project>('POST', '/projects', input),
+  getProject: (id: number) => request<ScopeDetail>('GET', `/projects/${id}`),
+  updateProject: (id: number, patch: UpdateProject) => request<Project>('PATCH', `/projects/${id}`, patch),
+  deleteProject: (id: number) => request<void>('DELETE', `/projects/${id}`),
+
+  createPoolState: (poolId: number, input: CreateState) => request<State>('POST', `/pools/${poolId}/states`, input),
+  createProjectState: (projectId: number, input: CreateState) => request<State>('POST', `/projects/${projectId}/states`, input),
   updateState: (id: number, patch: UpdateState) => request<State>('PATCH', `/states/${id}`, patch),
   deleteState: (id: number) => request<void>('DELETE', `/states/${id}`),
 
-  createCard: (boardId: number, input: CreateCard) => request<Card>('POST', `/boards/${boardId}/cards`, input),
+  createCard: (projectId: number, input: CreateCard) => request<Card>('POST', `/projects/${projectId}/cards`, input),
   getCard: (id: number) => request<Card>('GET', `/cards/${id}`),
   updateCard: (id: number, patch: UpdateCard) => request<Card>('PATCH', `/cards/${id}`, patch),
   setAssignees: (id: number, assignees: Assignee[]) => request<Card>('PUT', `/cards/${id}/assignees`, assignees),

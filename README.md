@@ -4,7 +4,7 @@
 
 # Pool Manager
 
-**Tableaux Kanban et chronologie pour planifier le travail d'une petite équipe.**
+**Pools de projets : Kanban et chronologie pour planifier le travail d'une petite équipe.**
 Application desktop macOS & Linux — Tauri v2 · SvelteKit · Svelte 5.
 
 [Fonctionnalités](#fonctionnalités) · [Installation](#installation) · [Développement](#développement) · [Serveur](https://github.com/OkilSaber/pool_manager_server)
@@ -13,16 +13,35 @@ Application desktop macOS & Linux — Tauri v2 · SvelteKit · Svelte 5.
 
 <picture>
   <source media="(prefers-color-scheme: dark)" srcset="docs/screenshots/kanban-dark.png" />
-  <img alt="Vue Kanban d'un tableau" src="docs/screenshots/kanban-light.png" />
+  <img alt="Tableau d'un pool : cartes de plusieurs projets" src="docs/screenshots/kanban-light.png" />
 </picture>
 
 ## Fonctionnalités
 
+### Projets et pools
+
+<picture>
+  <source media="(prefers-color-scheme: dark)" srcset="docs/screenshots/home-dark.png" />
+  <img alt="Accueil : pools et projets sans pool" src="docs/screenshots/home-light.png" />
+</picture>
+
+- Un **projet** a un nom, une couleur et un **code court** : ses cartes sont numérotées `SHOP-12`, `VITR-3`…
+  Il peut rester autonome (visible de vous seul, avec ses propres colonnes) ou être **rattaché à un pool**.
+- Un **pool** rassemble plusieurs projets et une équipe : son tableau réunit les cartes de tous ses projets,
+  avec un **filtre par projet** et ses propres colonnes.
+- Chaque projet a aussi **son propre tableau** (Kanban + chronologie) avec ses seules cartes.
+- Rattacher ou détacher un projet replace ses cartes dans les colonnes de même nom. Un projet peut être **archivé**.
+
+<picture>
+  <source media="(prefers-color-scheme: dark)" srcset="docs/screenshots/project-settings-dark.png" />
+  <img alt="Réglages d'un projet" src="docs/screenshots/project-settings-light.png" />
+</picture>
+
 ### Kanban
 
-Colonnes (états) propres à chaque tableau : ajout, renommage, couleur, réordonnancement. Les cartes se
-déplacent en glisser-déposer, s'ajoutent en un geste depuis le bas de la colonne, et affichent d'un coup
-d'œil priorité, chiffrage, dates prévues et assignés. Chaque colonne totalise sa charge en jours/homme.
+Colonnes éditables et réordonnables, cartes en glisser-déposer. « Ajouter une carte » ouvre directement
+la fiche de la carte, curseur dans le titre ; dans un pool, le projet est pré-rempli. Chaque colonne totalise
+sa charge en jours/homme.
 
 ### Cartes
 
@@ -31,27 +50,24 @@ d'œil priorité, chiffrage, dates prévues et assignés. Chaque colonne totalis
   <img alt="Détails d'une carte" src="docs/screenshots/card-light.png" />
 </picture>
 
-- **Priorité** P0 (critique) → P4 (minime), avec un code couleur constant dans toute l'app.
-- **Chiffrage** en jours/homme et **date de début**.
-- **Plusieurs assignés** avec une **répartition de la charge en %** (total = 100 %, bouton « Répartir équitablement »).
-- **Fin prévue calculée** en jours ouvrés : chacun avance en parallèle, la durée est celle de la plus grosse part.
-  10 j/h répartis 50/50 → 5 jours ; 70/30 → 7 jours. Les week-ends sont sautés.
-- Enregistrement automatique de chaque champ, sans bouton « Valider ».
+- **Projet** (obligatoire) et référence `CODE-n`.
+- **Priorité** P0 (critique) → P4 (minime), **chiffrage** en jours/homme, **date de début**.
+- **Plusieurs assignés** avec une **répartition de la charge en %** (total = 100 %).
+- **Fin prévue calculée** en jours ouvrés : la durée est celle de la plus grosse part
+  (10 j/h à 50/50 → 5 jours ; 70/30 → 7 jours), week-ends sautés.
+- Enregistrement automatique de chaque champ.
 
 ### Chronologie
 
 <picture>
   <source media="(prefers-color-scheme: dark)" srcset="docs/screenshots/timeline-dark.png" />
-  <img alt="Chronologie regroupée par état" src="docs/screenshots/timeline-light.png" />
+  <img alt="Chronologie d'un pool regroupée par projet" src="docs/screenshots/timeline-light.png" />
 </picture>
 
-Une vue façon Google Sheets › Insertion › Chronologie :
-
-- zoom **Jour / Semaine / Mois**, week-ends grisés, repère « Aujourd'hui » ;
-- regroupement **par état**, **par assigné** (avec la charge de chacun) ou sans regroupement ;
-- **glisser une barre** pour replanifier (aimantée au jour, aperçu des nouvelles dates, Échap pour annuler),
-  ou ←/→ au clavier ;
-- les cartes sans date ou sans chiffrage sont listées à part, planifiables en un clic.
+- Zoom **Jour / Semaine / Mois**, week-ends grisés, repère « Aujourd'hui ».
+- Regroupement **par projet**, **par état**, **par assigné** (avec la charge de chacun) ou sans regroupement.
+- **Glisser une barre** pour replanifier (aimantée au jour, Échap pour annuler), ou ←/→ au clavier.
+- Les cartes sans date ou sans chiffrage sont listées à part, planifiables en un clic.
 
 <picture>
   <source media="(prefers-color-scheme: dark)" srcset="docs/screenshots/timeline-assignees-dark.png" />
@@ -60,30 +76,30 @@ Une vue façon Google Sheets › Insertion › Chronologie :
 
 ### Équipe
 
-Comptes par email, tableaux partagés : le propriétaire invite des membres par email et peut les retirer ;
-un membre peut quitter un tableau (ses parts sont redistribuées pour rester à 100 %).
+Comptes par email ; le propriétaire d'un pool invite des membres par email et peut les retirer.
+Les assignés d'une carte sont choisis parmi les membres du pool.
 
 <table>
   <tr>
     <td><img alt="Connexion" src="docs/screenshots/login-light.png" /></td>
-    <td><img alt="Liste des tableaux" src="docs/screenshots/boards-dark.png" /></td>
+    <td><img alt="Tableau d'un projet" src="docs/screenshots/project-dark.png" /></td>
   </tr>
 </table>
 
 ### Finitions
 
 - Thème clair et sombre automatiques (suivent le système).
-- Animations courtes et nettes : courbes ease-out, aucune animation sur les actions clavier, respect de
-  « Réduire les animations ».
-- Navigable au clavier, libellés accessibles, interface entièrement en français.
+- Animations courtes et nettes, aucune animation sur les actions clavier, respect de « Réduire les animations ».
+- Navigable au clavier, interface entièrement en français.
 
 ## Installation
 
-Téléchargez le paquet de votre système dans les [Releases](https://github.com/OkilSaber/pool_manager_client/releases) :
-`.dmg` macOS (Apple Silicon `aarch64` ou Intel `x64`), `.deb` ou `.AppImage` Linux.
+Des paquets déjà construits sont disponibles dans les [Releases](https://github.com/OkilSaber/pool_manager_client/releases).
 L'app macOS est signée ad hoc mais pas notariée par Apple : au premier lancement, ouvrez
 **Réglages Système → Confidentialité et sécurité → Ouvrir quand même**, ou dans un terminal :
 `xattr -dr com.apple.quarantine "/Applications/Pool Manager.app"`.
+
+La version 0.2 du client nécessite le serveur **0.2** ou plus récent.
 
 Le client a besoin d'un [serveur Pool Manager](https://github.com/OkilSaber/pool_manager_server) joignable
 (sur votre machine ou le réseau local). Au premier lancement, renseignez son adresse dans
@@ -130,13 +146,14 @@ src/
 ├── lib/
 │   ├── api.ts              client HTTP typé
 │   ├── dates.ts            calculs en jours ouvrés (miroir du serveur)
-│   ├── stores/             session, tableau ouvert (mises à jour optimistes), toasts
+│   ├── stores/             session, pool ou projet ouvert (mises à jour optimistes), toasts
 │   ├── types/              types générés depuis le serveur — ne pas éditer
 │   └── components/
 │       ├── shell/          en-tête, menus, écrans d'authentification
-│       ├── board/          Kanban, carte, assignés, membres
+│       ├── board/          page de tableau, Kanban, carte, assignés, membres
+│       ├── projects/       création et réglages de projet, projets d'un pool
 │       └── timeline/       chronologie (calculs de mise en page dans timeline.ts)
-└── routes/                 login, signup, settings, boards, boards/[id]
+└── routes/                 login, signup, settings, pools, pools/[id], projects/[id]
 src-tauri/                  coquille Rust Tauri v2
 ```
 

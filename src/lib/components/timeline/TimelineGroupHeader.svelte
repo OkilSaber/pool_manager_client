@@ -1,5 +1,5 @@
 <!--
-  En-tête de groupe repliable : chevron, pastille (état) ou avatar (assigné), nom, nombre de cartes, charge.
+  En-tête de groupe repliable : chevron, pastille (état, projet + code) ou avatar (assigné), nom, nombre de cartes, charge.
   Dans la grille, une fine bande résume l'étendue du groupe (du premier début à la dernière fin).
 -->
 <script lang="ts">
@@ -14,6 +14,7 @@
     count,
     load = null,
     color = null,
+    code = null,
     userId = null,
     spanStart = null,
     spanEnd = null,
@@ -22,11 +23,13 @@
     collapsed,
     ontoggle
   }: {
-    kind: 'state' | 'assignee' | 'unplanned';
+    kind: 'project' | 'state' | 'assignee' | 'unplanned';
     label: string;
     count: number;
     load?: number | null;
     color?: string | null;
+    /** Code du projet (regroupement par projet) */
+    code?: string | null;
     userId?: number | null;
     spanStart?: number | null;
     spanEnd?: number | null;
@@ -42,7 +45,7 @@
   const loadTitle = $derived(kind === 'assignee' ? 'Charge de la personne (sa part des chiffrages)' : 'Charge totale');
   /** Nom lu par les lecteurs d'écran (sinon « Backlog 3 8 j/h ») ; les infobulles ne sont que visuelles. */
   const a11yLabel = $derived(
-    `${label}, ${plural(count, 'carte', 'cartes')}` + (load != null ? `, charge ${fmtEstimate(load)}` : '')
+    `${code ? `${code} ` : ''}${label}, ${plural(count, 'carte', 'cartes')}` + (load != null ? `, charge ${fmtEstimate(load)}` : '')
   );
 </script>
 
@@ -61,7 +64,7 @@
   <svg class="chev" class:collapsed width="12" height="12" viewBox="0 0 12 12" aria-hidden="true">
     <path d="M3 4.5 6 7.5 9 4.5" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round" />
   </svg>
-  {#if kind === 'state'}
+  {#if kind === 'state' || kind === 'project'}
     <span class="dot" style:background={color ?? 'var(--text-subtle)'} aria-hidden="true"></span>
   {:else if kind === 'assignee'}
     {#if userId != null}
@@ -75,6 +78,9 @@
       <rect x="2.5" y="3.5" width="11" height="10" rx="2" />
       <path d="M2.5 6.5h11M5.5 2v3M10.5 2v3" />
     </svg>
+  {/if}
+  {#if code}
+    <span class="code num">{code}</span>
   {/if}
   <span class="name" title={label}>{label}</span>
   <span class="count num" {@attach tooltip('Nombre de cartes')}>{count}</span>
@@ -158,6 +164,13 @@
     flex: none;
     border-radius: 999px;
     border: 1.5px dashed var(--border-strong);
+  }
+
+  .code {
+    flex: none;
+    color: var(--text-muted);
+    font-weight: 500;
+    letter-spacing: 0.02em;
   }
 
   .name {

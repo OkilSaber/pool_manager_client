@@ -38,9 +38,9 @@
     pending = true;
     try {
       await session.login(email.trim(), password);
-      // replaceState, comme la garde du layout qui redirige aussi /login → /boards dès que session.user est
+      // replaceState, comme la garde du layout qui redirige aussi /login → /pools dès que session.user est
       // posé : les deux navigations se recouvrent, et « Précédent » ne doit pas ramener à l'écran de connexion.
-      await goto('/boards', { replaceState: true });
+      await goto('/pools', { replaceState: true });
     } catch (err) {
       error = errorMessage(err);
       unreachable = err instanceof ApiError && err.status === 0;
@@ -60,7 +60,7 @@
   <title>Connexion · Pool Manager</title>
 </svelte:head>
 
-<AuthCard title="Connexion" subtitle="Accédez aux tableaux de votre équipe.">
+<AuthCard title="Connexion" subtitle="Accédez aux pools et projets de votre équipe.">
   <form class="form" onsubmit={submit} novalidate>
     <div class="field">
       <label class="label" for="login-email">Email</label>

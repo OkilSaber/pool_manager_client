@@ -1,6 +1,7 @@
-<!-- Cellule de libellé collante (sticky left) d'une ligne de carte : priorité + titre ; un clic ouvre la carte. -->
+<!-- Cellule de libellé collante (sticky left) d'une ligne de carte : priorité + référence (CODE-n) + titre ; un clic ouvre la carte. -->
 <script lang="ts">
   import PriorityBadge from '$lib/components/PriorityBadge.svelte';
+  import { board } from '$lib/stores/board.svelte';
   import type { Card } from '$lib/types/Card';
   import { fmtPct } from '$lib/format';
   import { tooltip } from '$lib/tooltip';
@@ -12,10 +13,13 @@
     indent = false,
     onopen
   }: { card: Card; pct?: number | null; indent?: boolean; onopen: () => void } = $props();
+
+  const ref = $derived(board.cardKey(card));
 </script>
 
-<button class="label" class:indent type="button" style:width="{LABEL_WIDTH}px" title={card.title} onclick={onopen}>
+<button class="label" class:indent type="button" style:width="{LABEL_WIDTH}px" title="{ref} · {card.title}" onclick={onopen}>
   <PriorityBadge value={card.priority} />
+  <span class="ref num">{ref}</span>
   <span class="title">{card.title}</span>
   {#if pct != null}
     <span class="pct num" {@attach tooltip('Part de la charge')}>{fmtPct(pct)}</span>
@@ -51,6 +55,14 @@
   .label:focus-visible {
     outline: 2px solid var(--accent);
     outline-offset: -2px;
+  }
+
+  /* Référence en retrait : un repère, le titre reste ce qu'on lit. */
+  .ref {
+    flex: none;
+    color: var(--text-muted);
+    font-size: 11.5px;
+    font-weight: 500;
   }
 
   .title {

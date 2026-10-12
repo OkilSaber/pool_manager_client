@@ -59,6 +59,11 @@
   const left = $derived((row.start - rangeStart) * dayWidth);
   const width = $derived((row.end - row.start + 1) * dayWidth);
   const color = $derived(priority(card.priority).color);
+  // Dans un pool, le liseré gauche (3 px) porte la couleur du projet ; le fond et le contour restent ceux de la priorité.
+  // Barre trop étroite (zoom « Mois ») : le liseré la mangerait, on garde la priorité seule.
+  const project = $derived(board.kind === 'pool' ? board.projectOf(card.project_id) : undefined);
+  const stripe = $derived(project && width >= 12 ? project.color : null);
+  const ref = $derived(board.cardKey(card));
   const people = $derived(card.assignees.slice(0, 3));
   const extra = $derived(card.assignees.length - people.length);
   const avatarsWidth = $derived(people.length ? 16 + (people.length - 1) * 13 + (extra > 0 ? 19 : 0) + 6 : 0);
@@ -66,8 +71,8 @@
   const inside = $derived(width >= Math.min(textWidth(card.title) + 18, 88) + avatarsWidth);
   const ariaLabel = $derived(
     row.start === row.end
-      ? `${card.title}, le ${formatLong(row.start)}`
-      : `${card.title}, du ${formatLong(row.start)} au ${formatLong(row.end)}`
+      ? `${ref} ${card.title}, le ${formatLong(row.start)}`
+      : `${ref} ${card.title}, du ${formatLong(row.start)} au ${formatLong(row.end)}`
   );
 
   // ---------- Drag ----------
@@ -301,6 +306,7 @@
   style:left="{left}px"
   style:width="{width}px"
   style:--c={color}
+  style:--stripe={stripe}
   role="button"
   tabindex="0"
   aria-label={ariaLabel}
@@ -359,7 +365,7 @@
     /* Fond opaque (mélangé à la surface) : la grille ne transparaît pas ; liseré plein à gauche. */
     background: color-mix(in srgb, var(--c) var(--fill), var(--surface));
     box-shadow:
-      inset 3px 0 0 var(--c),
+      inset 3px 0 0 var(--stripe, var(--c)),
       inset 0 0 0 1px color-mix(in srgb, var(--c) 32%, transparent);
     color: var(--text);
     font-size: 12px;
@@ -402,7 +408,7 @@
     z-index: 2;
     cursor: grabbing;
     box-shadow:
-      inset 3px 0 0 var(--c),
+      inset 3px 0 0 var(--stripe, var(--c)),
       inset 0 0 0 1px color-mix(in srgb, var(--c) 45%, transparent),
       var(--shadow-md);
   }

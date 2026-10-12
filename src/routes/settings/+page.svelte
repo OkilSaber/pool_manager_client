@@ -48,8 +48,8 @@
   const canSave = $derived(normalized === null || normalized !== saved);
   /** Le résultat d'un test ne vaut que pour l'adresse testée. */
   const shown: Status = $derived(testedUrl !== null && testedUrl === normalized ? status : 'idle');
-  const backHref = $derived(session.user ? '/boards' : '/login');
-  const backLabel = $derived(session.user ? 'Tableaux' : 'Connexion');
+  const backHref = $derived(session.user ? '/pools' : '/login');
+  const backLabel = $derived(session.user ? 'Accueil' : 'Connexion');
 
   function oninput() {
     showInvalid = false;
@@ -87,7 +87,7 @@
     }
     // Le jeton stocké appartient à l'ancien serveur : il ne doit pas partir vers le nouveau (en-tête
     // Authorization de chaque requête). Connecté, l'identité affichée et les données en mémoire sont
-    // aussi celles de l'ancien serveur (les identifiants de tableaux s'y recoupent) : fin de session
+    // aussi celles de l'ancien serveur (les identifiants de pools et projets s'y recoupent) : fin de session
     // locale, comme l'annonce la note sous le champ.
     const wasLoggedIn = session.user != null;
     session.clear();

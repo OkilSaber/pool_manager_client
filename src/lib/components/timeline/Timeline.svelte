@@ -38,6 +38,7 @@
     GROUP_KEY,
     HEADER_HEIGHT,
     isGroupBy,
+    isGroupByAvailable,
     isZoom,
     LABEL_WIDTH,
     plural,
@@ -64,8 +65,9 @@
   let announcement = $state('');
 
   /** « Projet » n'a de sens que dans un pool (une vue projet n'en montre qu'un). */
-  const groupOptions = $derived(GROUP_BYS.filter((g) => g.value !== 'project' || board.kind === 'pool'));
-  const groupBy = $derived(resolveGroupBy(groupPref, board.kind));
+  const hasTypes = $derived(board.types.length > 0);
+  const groupOptions = $derived(GROUP_BYS.filter((g) => isGroupByAvailable(g.value, board.kind, hasTypes)));
+  const groupBy = $derived(resolveGroupBy(groupPref, board.kind, hasTypes));
   /** Zone gardée dans la plage après un changement de zoom (sinon la date ancrée pourrait en sortir). */
   let keep = $state<{ from: number; to: number } | null>(null);
 
@@ -83,7 +85,7 @@
     )
   );
   const gridWidth = $derived(range.days * dayWidth);
-  const groups = $derived(buildGroups(board.visibleCards, board.states, board.members, board.projects, groupBy));
+  const groups = $derived(buildGroups(board.visibleCards, board.states, board.members, board.projects, board.types, groupBy));
   const unplanned = $derived(unplannedRows(board.visibleCards, board.states));
   const plannedCount = $derived(board.visibleCards.length - unplanned.length);
   /** Tableau ouvert (« pool:3 », « project:12 ») : clé des groupes repliés et de la mise en place initiale. */
@@ -443,7 +445,7 @@
               <div class="blank-label"></div>
               <p class="hint" style:left="{LABEL_WIDTH}px">
                 {#if board.visibleCards.length === 0}
-                  Aucune carte dans les projets affichés.
+                  Aucune carte ne correspond aux filtres.
                 {:else}
                   Aucune carte planifiée : il leur faut une date de début et un chiffrage.
                 {/if}
@@ -455,8 +457,9 @@
             {#if groupBy !== 'none'}
               <div class="row group-row" class:spaced={i > 0}>
                 <TimelineGroupHeader
-                  kind={groupBy === 'assignee' ? 'assignee' : groupBy === 'project' ? 'project' : 'state'}
+                  kind={groupBy === 'assignee' ? 'assignee' : groupBy === 'project' ? 'project' : groupBy === 'type' ? 'type' : 'state'}
                   code={group.code}
+                  icon={group.icon}
                   label={group.label}
                   count={group.rows.length}
                   load={group.load}

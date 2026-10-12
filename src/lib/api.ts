@@ -5,7 +5,9 @@
 import type { AssigneeInput } from './types/AssigneeInput';
 import type { AuthResponse } from './types/AuthResponse';
 import type { Card } from './types/Card';
+import type { CardType } from './types/CardType';
 import type { CreateCard } from './types/CreateCard';
+import type { CreateCardType } from './types/CreateCardType';
 import type { CreateProject } from './types/CreateProject';
 import type { CreateState } from './types/CreateState';
 import type { Member } from './types/Member';
@@ -14,6 +16,7 @@ import type { Project } from './types/Project';
 import type { ScopeDetail } from './types/ScopeDetail';
 import type { State } from './types/State';
 import type { UpdateCard } from './types/UpdateCard';
+import type { UpdateCardType } from './types/UpdateCardType';
 import type { UpdateProject } from './types/UpdateProject';
 import type { UpdateState } from './types/UpdateState';
 import type { User } from './types/User';
@@ -158,6 +161,12 @@ export const api = {
   createProjectState: (projectId: number, input: CreateState) => request<State>('POST', `/projects/${projectId}/states`, input),
   updateState: (id: number, patch: UpdateState) => request<State>('PATCH', `/states/${id}`, patch),
   deleteState: (id: number) => request<void>('DELETE', `/states/${id}`),
+
+  createPoolType: (poolId: number, input: CreateCardType) => request<CardType>('POST', `/pools/${poolId}/types`, input),
+  createProjectType: (projectId: number, input: CreateCardType) => request<CardType>('POST', `/projects/${projectId}/types`, input),
+  updateType: (id: number, patch: UpdateCardType) => request<CardType>('PATCH', `/types/${id}`, patch),
+  /** Les cartes de ce type repassent sans type. */
+  deleteType: (id: number) => request<void>('DELETE', `/types/${id}`),
 
   createCard: (projectId: number, input: CreateCard) => request<Card>('POST', `/projects/${projectId}/cards`, input),
   getCard: (id: number) => request<Card>('GET', `/cards/${id}`),

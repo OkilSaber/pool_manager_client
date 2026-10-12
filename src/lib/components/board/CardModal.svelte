@@ -10,6 +10,7 @@
 -->
 <script lang="ts">
   import { tick, untrack } from 'svelte';
+  import CardTypeIcon from '$lib/components/CardTypeIcon.svelte';
   import Modal from '$lib/components/Modal.svelte';
   import BusyLabel from '$lib/components/shell/BusyLabel.svelte';
   import { computeSchedule, formatLong, toDay } from '$lib/dates';
@@ -21,6 +22,7 @@
   import type { UpdateCard } from '$lib/types/UpdateCard';
   import { lastProject, rememberProject } from '$lib/components/projects/project';
   import AssigneeEditor from './AssigneeEditor.svelte';
+  import TypeSelect from './TypeSelect.svelte';
   import { formatDayRange } from '$lib/components/timeline/timeline';
   import { autosize } from './autosize';
   import { fmtCreated, fmtWorkingDays, parseEstimate } from '$lib/format';
@@ -73,6 +75,7 @@
   let draftPriority = $state(DEFAULT_PRIORITY);
   let draftStart = $state('');
   let draftProject = $state<number | null>(null);
+  let draftType = $state<number | null>(null);
   /** Création en cours (requête partie). */
   let busy = $state(false);
 
@@ -112,6 +115,12 @@
     return pool[0] ?? null;
   }
 
+  /** Type proposé : l'unique type filtré, s'il y en a un (la carte créée reste alors visible). */
+  function defaultType(): number | null {
+    const known = board.typeFilter.filter((id) => board.type(id) != null);
+    return board.typeFilter.length === 1 && known.length === 1 ? known[0] : null;
+  }
+
   let wasOpen = false;
   $effect.pre(() => {
     const o = open;
@@ -125,6 +134,7 @@
       draftPriority = DEFAULT_PRIORITY;
       draftStart = '';
       draftProject = defaultProject();
+      draftType = defaultType();
       focused = null;
       busy = false;
     });
@@ -175,6 +185,7 @@
     if (!creating || busy || !t || projectId == null || stateId == null) return;
     const input: CreateCard = { state_id: stateId, title: t, priority: draftPriority };
     if (description.trim()) input.description = description;
+    if (draftType != null && board.type(draftType)) input.type_id = draftType;
     const est = parseEstimate(estimate);
     if (typeof est === 'number') input.estimate_days = est;
     if (draftStart && plausible(draftStart)) input.start_date = draftStart;
@@ -193,6 +204,8 @@
     const est2 = parseEstimate(estimate);
     if (est2 !== undefined && est2 !== created.estimate_days) extra.estimate_days = est2;
     if (draftPriority !== created.priority) extra.priority = draftPriority;
+    const type2 = draftType != null && board.type(draftType) ? draftType : null;
+    if (type2 !== created.type_id) extra.type_id = type2;
     const start2 = draftStart && plausible(draftStart) ? draftStart : null;
     if (start2 !== created.start_date) extra.start_date = start2;
     if (Object.keys(extra).length) void board.updateCard(created.id, extra);
@@ -264,6 +277,11 @@
       return;
     }
     if (card && projectId !== card.project_id) patch({ project_id: projectId });
+  }
+
+  function setType(typeId: number | null) {
+    if (creating) draftType = typeId;
+    else if (card && typeId !== card.type_id) patch({ type_id: typeId });
   }
 
   function setPriority(value: number) {
@@ -375,6 +393,8 @@
 
   const vState = $derived(card ? card.state_id : draftState);
   const vPriority = $derived(card ? card.priority : draftPriority);
+  const vType = $derived(card ? card.type_id : draftType);
+  const cardType = $derived(board.type(vType));
   const vStart = $derived(card ? card.start_date : draftStart || null);
   const vEstimate = $derived.by(() => {
     if (card) return card.estimate_days;
@@ -429,11 +449,10 @@
               <span class="dot" aria-hidden="true"></span>
               {project.name}
             </span>
-            {#if card}
-              <span class="key num">{board.cardKey(card)}</span>
-            {:else}
-              <span class="key num muted">{project.code}-…</span>
-            {/if}
+            <span class="key num" class:muted={!card}>
+              {#if cardType}<CardTypeIcon icon={cardType.icon} size={12} label="Type : {cardType.name}" />{/if}
+              {card ? board.cardKey(card) : `${project.code}-…`}
+            </span>
           </div>
         {/if}
 
@@ -520,6 +539,13 @@
             </select>
           </div>
         </div>
+
+        {#if board.types.length}
+          <div class="field">
+            <span class="label" id="{uid}-type">Type</span>
+            <TypeSelect value={vType} types={board.types} labelledby="{uid}-type" onchange={setType} />
+          </div>
+        {/if}
 
         <div class="field">
           <span class="label" id="{uid}-prio">Priorité</span>
@@ -715,6 +741,9 @@
   }
 
   .key {
+    display: inline-flex;
+    align-items: center;
+    gap: 5px;
     flex: none;
     padding: 1px 6px;
     border-radius: 4px;

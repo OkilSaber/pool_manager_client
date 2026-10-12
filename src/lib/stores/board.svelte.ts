@@ -8,10 +8,12 @@
 
 import { untrack } from 'svelte';
 import { api, ApiError } from '$lib/api';
+import { NO_TYPE } from '$lib/cardTypes';
 import { byShare, DEFAULT_OCCUPANCY, withSchedules } from '$lib/dates';
 import type { Assignee } from '$lib/types/Assignee';
 import type { AssigneeInput } from '$lib/types/AssigneeInput';
 import type { Card } from '$lib/types/Card';
+import type { CardType } from '$lib/types/CardType';
 import type { CreateCard } from '$lib/types/CreateCard';
 import type { CreateProject } from '$lib/types/CreateProject';
 import type { Member } from '$lib/types/Member';
@@ -21,6 +23,7 @@ import type { ScopeDetail } from '$lib/types/ScopeDetail';
 import type { ScopeKind } from '$lib/types/ScopeKind';
 import type { State } from '$lib/types/State';
 import type { UpdateCard } from '$lib/types/UpdateCard';
+import type { UpdateCardType } from '$lib/types/UpdateCardType';
 import type { UpdateProject } from '$lib/types/UpdateProject';
 import type { UpdateState } from '$lib/types/UpdateState';
 import { poolsCache } from './pools-cache';
@@ -70,6 +73,15 @@ export interface ScopeRef {
 }
 
 const FILTER_KEY = (poolId: number) => `pm.filter.pool.${poolId}`;
+/** Filtre par type : mémorisé par pool (ou par projet sans pool, qui a ses propres types). */
+const TYPE_FILTER_KEY = (ref: ScopeRef) => `pm.typefilter.${ref.kind}.${ref.id}`;
+
+/** Portée des types d'un tableau : le pool (vue pool ou projet rattaché), sinon le projet autonome. */
+function typeScope(d: ScopeDetail): ScopeRef | null {
+  if (d.pool) return { kind: 'pool', id: d.pool.id };
+  if (d.project) return { kind: 'project', id: d.project.id };
+  return null;
+}
 
 function scopeId(d: ScopeDetail | null): ScopeRef | null {
   if (!d) return null;
@@ -89,6 +101,8 @@ class BoardStore {
   errorStatus = $state<number | null>(null);
   /** Projets affichés dans un pool (vide = tous) ; mémorisé par pool. */
   projectFilter = $state<number[]>([]);
+  /** Types affichés (vide = tous ; `NO_TYPE` = cartes sans type) ; mémorisé par pool (ou projet autonome). */
+  typeFilter = $state<number[]>([]);
 
   kind: ScopeKind | null = $derived(this.detail?.kind ?? null);
   pool: Pool | null = $derived(this.detail?.pool ?? null);
@@ -101,10 +115,16 @@ class BoardStore {
   states: State[] = $derived(this.detail ? [...this.detail.states].sort(byPosition) : []);
   members: Member[] = $derived(this.detail?.members ?? []);
   cards: Card[] = $derived(this.detail?.cards ?? []);
-  /** Cartes après filtre par projet (pool) : ce que montrent le Kanban et la chronologie. */
-  visibleCards: Card[] = $derived(
-    this.kind === 'pool' && this.projectFilter.length ? this.cards.filter((c) => this.projectFilter.includes(c.project_id)) : this.cards
-  );
+  /** Types de cartes applicables, dans l'ordre choisi. */
+  types: CardType[] = $derived(this.detail ? [...this.detail.types].sort(byPosition) : []);
+  /** Cartes après filtres par projet (pool) et par type : ce que montrent le Kanban et la chronologie. */
+  visibleCards: Card[] = $derived.by(() => {
+    let list = this.cards;
+    if (this.kind === 'pool' && this.projectFilter.length) list = list.filter((c) => this.projectFilter.includes(c.project_id));
+    const types = this.typeFilter;
+    if (types.length) list = list.filter((c) => types.includes(c.type_id ?? NO_TYPE));
+    return list;
+  });
   /** Gestion du pool (renommer, membres) : propriétaire du pool. Projet sans pool : on en est forcément le propriétaire. */
   isOwner: boolean = $derived(this.pool ? this.pool.role === 'owner' : this.kind === 'project');
   /** Titre du tableau ouvert. */
@@ -129,6 +149,11 @@ class BoardStore {
     return this.members.find((m) => m.user_id === userId);
   }
 
+  /** Type d'une carte (`null`/inconnu : aucun). */
+  type(id: number | null | undefined): CardType | undefined {
+    return id == null ? undefined : this.types.find((t) => t.id === id);
+  }
+
   projectOf(id: number): Project | undefined {
     return this.projects.find((p) => p.id === id);
   }
@@ -148,7 +173,27 @@ class BoardStore {
     }
   }
 
+  setTypeFilter(ids: number[]) {
+    this.typeFilter = ids;
+    const scope = this.detail ? typeScope(this.detail) : null;
+    if (!scope) return;
+    if (ids.length) localStorage.setItem(TYPE_FILTER_KEY(scope), JSON.stringify(ids));
+    else localStorage.removeItem(TYPE_FILTER_KEY(scope));
+  }
+
+  private restoreTypeFilter(d: ScopeDetail) {
+    const scope = typeScope(d);
+    try {
+      const saved = scope ? JSON.parse(localStorage.getItem(TYPE_FILTER_KEY(scope)) ?? '[]') : [];
+      const known = new Set([NO_TYPE, ...d.types.map((t) => t.id)]);
+      this.typeFilter = Array.isArray(saved) ? saved.filter((id): id is number => typeof id === 'number' && known.has(id)) : [];
+    } catch {
+      this.typeFilter = [];
+    }
+  }
+
   private restoreFilter(d: ScopeDetail) {
+    this.restoreTypeFilter(d);
     if (d.kind !== 'pool' || !d.pool) {
       this.projectFilter = [];
       return;
@@ -209,6 +254,7 @@ class BoardStore {
     this.error = null;
     this.errorStatus = null;
     this.projectFilter = [];
+    this.typeFilter = [];
   }
 
   // ---------- Cartes : file de requêtes par carte ----------
@@ -273,6 +319,7 @@ class BoardStore {
     const snapshot = $state.snapshot(before) as Card;
     const optimistic: Card = { ...snapshot };
     if (patch.state_id !== undefined) optimistic.state_id = patch.state_id;
+    if (patch.type_id !== undefined) optimistic.type_id = patch.type_id;
     if (patch.project_id !== undefined) optimistic.project_id = patch.project_id;
     if (patch.position !== undefined) optimistic.position = patch.position;
     if (patch.title !== undefined) optimistic.title = patch.title;
@@ -399,6 +446,60 @@ class BoardStore {
     try {
       await api.deleteState(id);
       if (this.detail) this.detail.states = this.detail.states.filter((s) => s.id !== id);
+      return true;
+    } catch (e) {
+      toast.error(e);
+      return false;
+    }
+  }
+
+  // ---------- Types de cartes ----------
+
+  async createType(name: string, icon: string): Promise<CardType | null> {
+    if (!this.detail) return null;
+    const ref = this.ref;
+    // Types du pool (vue pool, ou projet rattaché), sinon types propres du projet autonome.
+    const poolId = this.pool?.id;
+    const projectId = this.project?.id;
+    try {
+      const type =
+        poolId != null ? await api.createPoolType(poolId, { name, icon }) : await api.createProjectType(projectId!, { name, icon });
+      if (sameScope(this.ref, ref) && this.detail && !this.detail.types.some((t) => t.id === type.id)) this.detail.types.push(type);
+      return type;
+    } catch (e) {
+      toast.error(e);
+      return null;
+    }
+  }
+
+  async updateType(id: number, patch: UpdateCardType): Promise<boolean> {
+    if (!this.detail) return false;
+    const i = this.detail.types.findIndex((t) => t.id === id);
+    if (i < 0) return false;
+    const snapshot = $state.snapshot(this.detail.types[i]) as CardType;
+    this.detail.types[i] = { ...snapshot, ...Object.fromEntries(Object.entries(patch).filter(([, v]) => v !== undefined)) };
+    try {
+      const updated = await api.updateType(id, patch);
+      const j = this.detail?.types.findIndex((t) => t.id === id) ?? -1;
+      if (this.detail && j >= 0) this.detail.types[j] = updated;
+      return true;
+    } catch (e) {
+      const j = this.detail?.types.findIndex((t) => t.id === id) ?? -1;
+      if (this.detail && j >= 0) this.detail.types[j] = snapshot;
+      toast.error(e);
+      return false;
+    }
+  }
+
+  /** Supprime un type ; comme le serveur, ses cartes repassent sans type. */
+  async deleteType(id: number): Promise<boolean> {
+    if (!this.detail) return false;
+    try {
+      await api.deleteType(id);
+      if (!this.detail) return true;
+      this.detail.types = this.detail.types.filter((t) => t.id !== id);
+      for (const c of this.detail.cards) if (c.type_id === id) c.type_id = null;
+      if (this.typeFilter.includes(id)) this.setTypeFilter(this.typeFilter.filter((t) => t !== id));
       return true;
     } catch (e) {
       toast.error(e);

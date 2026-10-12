@@ -6,7 +6,11 @@ export type Card = { id: number, project_id: number,
 /**
  * Numéro dans le projet (affiché `CODE-number`)
  */
-number: number, state_id: number, title: string, description: string, 
+number: number, state_id: number, 
+/**
+ * Type de la carte (de la portée du projet) ; `null` = aucun type
+ */
+type_id: number | null, title: string, description: string, 
 /**
  * 0 = P0 (le plus urgent) … 4 = P4
  */

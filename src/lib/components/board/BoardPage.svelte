@@ -1,5 +1,5 @@
 <!--
-  Page d'un pool ou d'un projet : en-tête, filtre par projet (pool), vue Kanban ou Chronologie
+  Page d'un pool ou d'un projet : en-tête, filtres par projet (pool) et par type, vue Kanban ou Chronologie
   (?view=timeline, conservée au rechargement), et une modale de carte unique partagée par les deux vues
   (consultation d'une carte, ou création depuis une colonne).
 -->
@@ -91,7 +91,7 @@
 <div class="board-page">
   {#if ready}
     <BoardHeader {view} onviewchange={setView} />
-    {#if board.kind === 'pool' && board.activeProjects.length > 1}
+    {#if (board.kind === 'pool' && board.activeProjects.length > 1) || board.types.length > 0}
       <ProjectFilterBar />
     {/if}
     <div class="view" id={BOARD_VIEW_PANEL_ID} role="tabpanel" aria-label={view === 'kanban' ? 'Tableau' : 'Chronologie'}>

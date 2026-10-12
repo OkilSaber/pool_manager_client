@@ -5,6 +5,7 @@
     membres du pool s'il en a un (aucun pour un projet autonome).
   - « Colonnes » : éditeur des états (pool ou projet autonome ; lecture seule avec lien vers le pool
     pour un projet rattaché, dont les colonnes sont celles du pool).
+  - « Types » : éditeur des types de cartes (même portée que les colonnes).
   Le sélecteur de vue utilise une liste dupliquée « active » découpée par clip-path :
   la couleur du libellé suit exactement l'indicateur pendant qu'il glisse.
 -->
@@ -22,6 +23,7 @@
   import { board } from '$lib/stores/board.svelte';
   import MembersDialog from './MembersDialog.svelte';
   import StatesEditor from './StatesEditor.svelte';
+  import TypesEditor from './TypesEditor.svelte';
   import { lastInputWasKeyboard } from '$lib/modality';
   import { tooltip } from '$lib/tooltip';
 
@@ -49,6 +51,7 @@
   let projectsOpen = $state(false);
   let settingsOpen = $state(false);
   let statesOpen = $state(false);
+  let typesOpen = $state(false);
   /** Projet rattaché : ses colonnes sont celles du pool (éditeur en lecture seule). */
   const statesManaged = $derived(!isPool && parentPool != null);
 
@@ -232,6 +235,23 @@
           <span class="badge num" aria-hidden="true">{board.states.length}</span>
         {/if}
       </button>
+
+      <button
+        class="btn btn-sm"
+        type="button"
+        onclick={() => (typesOpen = true)}
+        aria-label={statesManaged ? 'Types de cartes (gérés par le pool)' : `Types de cartes (${board.types.length})`}
+        {@attach tooltip(statesManaged ? 'Types gérés par le pool' : isPool ? 'Types de cartes du pool' : 'Types de cartes du projet')}
+      >
+        <svg width="13" height="13" viewBox="0 0 16 16" aria-hidden="true">
+          <path d="M2.5 3.5a1 1 0 0 1 1-1h4.1a1 1 0 0 1 .7.3l5.2 5.2a1 1 0 0 1 0 1.4l-4.1 4.1a1 1 0 0 1-1.4 0L2.8 8.3a1 1 0 0 1-.3-.7z" stroke="currentColor" stroke-width="1.3" fill="none" stroke-linejoin="round" />
+          <circle cx="5.6" cy="5.6" r="1" fill="currentColor" />
+        </svg>
+        Types
+        {#if !statesManaged}
+          <span class="badge num" aria-hidden="true">{board.types.length}</span>
+        {/if}
+      </button>
     {/if}
 
     {#if isPool}
@@ -271,6 +291,7 @@
 {/if}
 {#if board.kind}
   <StatesEditor bind:open={statesOpen} />
+  <TypesEditor bind:open={typesOpen} />
 {/if}
 {#if project}
   <ProjectFormDialog bind:open={settingsOpen} {project} />

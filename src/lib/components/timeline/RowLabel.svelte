@@ -1,5 +1,6 @@
-<!-- Cellule de libellé collante (sticky left) d'une ligne de carte : priorité + référence (CODE-n) + titre ; un clic ouvre la carte. -->
+<!-- Cellule de libellé collante (sticky left) d'une ligne de carte : priorité + type + référence (CODE-n) + titre ; un clic ouvre la carte. -->
 <script lang="ts">
+  import CardTypeIcon from '$lib/components/CardTypeIcon.svelte';
   import PriorityBadge from '$lib/components/PriorityBadge.svelte';
   import { board } from '$lib/stores/board.svelte';
   import type { Card } from '$lib/types/Card';
@@ -15,11 +16,15 @@
   }: { card: Card; pct?: number | null; indent?: boolean; onopen: () => void } = $props();
 
   const ref = $derived(board.cardKey(card));
+  const type = $derived(board.type(card.type_id));
 </script>
 
-<button class="label" class:indent type="button" style:width="{LABEL_WIDTH}px" title="{ref} · {card.title}" onclick={onopen}>
+<button class="label" class:indent type="button" style:width="{LABEL_WIDTH}px" title="{ref}{type ? ` · ${type.name}` : ''} · {card.title}" onclick={onopen}>
   <PriorityBadge value={card.priority} />
-  <span class="ref num">{ref}</span>
+  <span class="ref num">
+    {#if type}<CardTypeIcon icon={type.icon} size={13} label="Type : {type.name}" />{/if}
+    {ref}
+  </span>
   <span class="title">{card.title}</span>
   {#if pct != null}
     <span class="pct num" {@attach tooltip('Part de la charge')}>{fmtPct(pct)}</span>
@@ -60,6 +65,9 @@
   /* Référence en retrait : un repère, le titre reste ce qu'on lit. */
   .ref {
     flex: none;
+    display: inline-flex;
+    align-items: center;
+    gap: 5px;
     color: var(--text-muted);
     font-size: 11.5px;
     font-weight: 500;

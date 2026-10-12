@@ -4,6 +4,7 @@
 -->
 <script lang="ts">
   import Avatar from '$lib/components/Avatar.svelte';
+  import CardTypeIcon from '$lib/components/CardTypeIcon.svelte';
   import { fmtEstimate } from '$lib/format';
   import { tooltip } from '$lib/tooltip';
   import { LABEL_WIDTH, plural } from './timeline';
@@ -15,6 +16,7 @@
     load = null,
     color = null,
     code = null,
+    icon = null,
     userId = null,
     spanStart = null,
     spanEnd = null,
@@ -23,13 +25,15 @@
     collapsed,
     ontoggle
   }: {
-    kind: 'project' | 'state' | 'assignee' | 'unplanned';
+    kind: 'project' | 'state' | 'type' | 'assignee' | 'unplanned';
     label: string;
     count: number;
     load?: number | null;
     color?: string | null;
     /** Code du projet (regroupement par projet) */
     code?: string | null;
+    /** Glyphe du type (regroupement par type) ; null = « Sans type » */
+    icon?: string | null;
     userId?: number | null;
     spanStart?: number | null;
     spanEnd?: number | null;
@@ -66,6 +70,12 @@
   </svg>
   {#if kind === 'state' || kind === 'project'}
     <span class="dot" style:background={color ?? 'var(--text-subtle)'} aria-hidden="true"></span>
+  {:else if kind === 'type'}
+    {#if icon}
+      <CardTypeIcon {icon} />
+    {:else}
+      <span class="no-type" aria-hidden="true"></span>
+    {/if}
   {:else if kind === 'assignee'}
     {#if userId != null}
       <Avatar id={userId} name={label} size={18} />
@@ -156,6 +166,15 @@
     stroke-width: 1.3;
     stroke-linecap: round;
     color: var(--text-subtle);
+  }
+
+  .no-type {
+    width: 12px;
+    height: 12px;
+    margin: 1px;
+    flex: none;
+    border-radius: 3px;
+    border: 1.5px dashed var(--border-strong);
   }
 
   .nobody {

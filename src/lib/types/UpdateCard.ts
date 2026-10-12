@@ -7,4 +7,8 @@ export type UpdateCard = {
 /**
  * Déplacer la carte vers un autre projet du même pool (elle reçoit un nouveau numéro)
  */
-project_id?: number, state_id?: number, title?: string, description?: string, priority?: number, estimate_days?: number | null, start_date?: string | null, position?: number, };
+project_id?: number, state_id?: number, 
+/**
+ * Absent = inchangé, `null` = aucun type, valeur = type de la portée du projet
+ */
+type_id?: number | null, title?: string, description?: string, priority?: number, estimate_days?: number | null, start_date?: string | null, position?: number, };

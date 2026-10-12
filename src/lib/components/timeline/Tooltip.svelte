@@ -5,6 +5,7 @@
 -->
 <script lang="ts">
   import Avatar from '$lib/components/Avatar.svelte';
+  import CardTypeIcon from '$lib/components/CardTypeIcon.svelte';
   import PriorityBadge from '$lib/components/PriorityBadge.svelte';
   import { toDay } from '$lib/dates';
   import { board } from '$lib/stores/board.svelte';
@@ -38,6 +39,7 @@
   /** Projet affiché dans un pool seulement (une vue projet n'en montre qu'un : la référence suffit). */
   const project = $derived(card && board.kind === 'pool' ? board.projectOf(card.project_id) : undefined);
   const ref = $derived(card ? board.cardKey(card) : '');
+  const type = $derived(card ? board.type(card.type_id) : undefined);
   const start = $derived(toDay(card?.schedule?.start));
   const end = $derived(toDay(card?.schedule?.end));
   const person = $derived(userId != null ? card?.assignees.find((a) => a.user_id === userId) : undefined);
@@ -64,7 +66,12 @@
         <span class="project">{project.name}</span>
         <span class="sep" aria-hidden="true">·</span>
       {/if}
+      {#if type}<CardTypeIcon icon={type.icon} size={12} />{/if}
       <span class="num">{ref}</span>
+      {#if type}
+        <span class="sep" aria-hidden="true">·</span>
+        <span class="type-name">{type.name}</span>
+      {/if}
     </div>
     <div class="title">{card.title}</div>
     <div class="meta">
@@ -170,6 +177,12 @@
     font-size: 11.5px;
     font-weight: 500;
     white-space: nowrap;
+  }
+
+  .type-name {
+    min-width: 0;
+    overflow: hidden;
+    text-overflow: ellipsis;
   }
 
   .project {

@@ -17,6 +17,8 @@ import {
 } from '$lib/dates';
 import type { Card } from '$lib/types/Card';
 import type { Member } from '$lib/types/Member';
+import { glyphColor } from '$lib/components/CardTypeIcon.svelte';
+import type { CardType } from '$lib/types/CardType';
 import type { Project } from '$lib/types/Project';
 import type { Schedule } from '$lib/types/Schedule';
 import type { State } from '$lib/types/State';
@@ -24,7 +26,7 @@ import type { State } from '$lib/types/State';
 // ---------- Réglages ----------
 
 export type Zoom = 'day' | 'week' | 'month';
-export type GroupBy = 'project' | 'state' | 'assignee' | 'none';
+export type GroupBy = 'project' | 'state' | 'type' | 'assignee' | 'none';
 
 export const ZOOMS: { value: Zoom; label: string; dayWidth: number }[] = [
   { value: 'day', label: 'Jour', dayWidth: 40 },
@@ -35,6 +37,7 @@ export const ZOOMS: { value: Zoom; label: string; dayWidth: number }[] = [
 export const GROUP_BYS: { value: GroupBy; label: string }[] = [
   { value: 'project', label: 'Projet' },
   { value: 'state', label: 'État' },
+  { value: 'type', label: 'Type' },
   { value: 'assignee', label: 'Assigné' },
   { value: 'none', label: 'Aucun' }
 ];
@@ -48,15 +51,22 @@ export function isZoom(v: unknown): v is Zoom {
 }
 
 export function isGroupBy(v: unknown): v is GroupBy {
-  return v === 'project' || v === 'state' || v === 'assignee' || v === 'none';
+  return v === 'project' || v === 'state' || v === 'type' || v === 'assignee' || v === 'none';
+}
+
+/** Regroupements proposés : « Projet » seulement dans un pool, « Type » seulement s'il existe des types. */
+export function isGroupByAvailable(g: GroupBy, kind: 'pool' | 'project' | null, hasTypes: boolean): boolean {
+  if (g === 'project') return kind === 'pool';
+  if (g === 'type') return hasTypes;
+  return true;
 }
 
 /**
- * Regroupement effectif : la préférence enregistrée si elle a un sens pour ce type de tableau
- * (« Projet » n'en a pas dans une vue projet), sinon « Projet » dans un pool et « État » ailleurs.
+ * Regroupement effectif : la préférence enregistrée si elle a un sens pour ce tableau
+ * (« Projet » n'en a pas dans une vue projet, « Type » sans types), sinon « Projet » dans un pool et « État » ailleurs.
  */
-export function resolveGroupBy(pref: GroupBy | null, kind: 'pool' | 'project' | null): GroupBy {
-  if (pref != null && (pref !== 'project' || kind === 'pool')) return pref;
+export function resolveGroupBy(pref: GroupBy | null, kind: 'pool' | 'project' | null, hasTypes: boolean): GroupBy {
+  if (pref != null && isGroupByAvailable(pref, kind, hasTypes)) return pref;
   return kind === 'pool' ? 'project' : 'state';
 }
 
@@ -250,6 +260,8 @@ export interface TimelineGroup {
   userId: number | null;
   /** Code du projet (regroupement par projet) */
   code: string | null;
+  /** Glyphe du type (regroupement par type) ; null = « Sans type » ou autre */
+  icon: string | null;
   rows: TimelineRow[];
   /** Charge totale en j/h (part de la personne pour un groupe d'assigné) */
   load: number;
@@ -325,7 +337,7 @@ function makeGroup(
   key: string,
   label: string,
   rows: TimelineRow[],
-  opts: { color?: string | null; userId?: number | null; code?: string | null } = {}
+  opts: { color?: string | null; userId?: number | null; code?: string | null; icon?: string | null } = {}
 ): TimelineGroup {
   rows.sort(byStart);
   let load = 0;
@@ -342,6 +354,7 @@ function makeGroup(
     color: opts.color ?? null,
     userId: opts.userId ?? null,
     code: opts.code ?? null,
+    icon: opts.icon ?? null,
     rows,
     load,
     spanStart,
@@ -357,6 +370,7 @@ export function buildGroups(
   states: State[],
   members: Member[],
   projects: Project[],
+  types: CardType[],
   groupBy: GroupBy
 ): TimelineGroup[] {
   if (groupBy === 'none') {
@@ -402,6 +416,25 @@ export function buildGroups(
       .map((c) => scheduledRow(c, `s?:${c.id}`, null))
       .filter((r): r is TimelineRow => r != null);
     if (orphans.length) groups.push(makeGroup('s?', 'Sans état', orphans));
+    return groups;
+  }
+
+  if (groupBy === 'type') {
+    // Un groupe par type, dans l'ordre des types, puis « Sans type » (type absent ou inconnu).
+    const groups: TimelineGroup[] = [];
+    const known = new Set(types.map((t) => t.id));
+    for (const t of types) {
+      const rows = cards
+        .filter((c) => c.type_id === t.id)
+        .map((c) => scheduledRow(c, `t${t.id}:${c.id}`, null))
+        .filter((r): r is TimelineRow => r != null);
+      if (rows.length) groups.push(makeGroup(`t${t.id}`, t.name, rows, { icon: t.icon, color: glyphColor(t.icon) }));
+    }
+    const untyped = cards
+      .filter((c) => c.type_id == null || !known.has(c.type_id))
+      .map((c) => scheduledRow(c, `t-:${c.id}`, null))
+      .filter((r): r is TimelineRow => r != null);
+    if (untyped.length) groups.push(makeGroup('t-', 'Sans type', untyped));
     return groups;
   }
 

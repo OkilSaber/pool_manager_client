@@ -4,6 +4,7 @@
 -->
 <script lang="ts">
   import Avatar from '$lib/components/Avatar.svelte';
+  import CardTypeIcon from '$lib/components/CardTypeIcon.svelte';
   import PriorityBadge from '$lib/components/PriorityBadge.svelte';
   import { dayOfMonth, formatShort, toDay } from '$lib/dates';
   import { board } from '$lib/stores/board.svelte';
@@ -44,11 +45,16 @@
   const project = $derived(board.projectOf(card.project_id));
   const key = $derived(board.cardKey(card));
   const inPool = $derived(board.kind === 'pool');
+  const type = $derived(board.type(card.type_id));
 </script>
 
 <article class="card">
   <div class="top">
     <PriorityBadge value={card.priority} />
+    {#if type}
+      <!-- Nom porté par l'enveloppe (sans <title> SVG : il doublerait l'infobulle). -->
+      <span class="type" role="img" aria-label="Type : {type.name}" {@attach tooltip(type.name)}><CardTypeIcon icon={type.icon} /></span>
+    {/if}
     <span class="key num" class:pool={inPool} {@attach tooltip(inPool && project ? project.name : null)}>
       {#if inPool && project}<span class="key-dot" style:background={project.color} aria-hidden="true"></span>{/if}
       {key}
@@ -162,6 +168,18 @@
     letter-spacing: 0.02em;
     color: var(--text-subtle);
     white-space: nowrap;
+  }
+
+  /* Glyphe du type, collé à la référence (la paire est poussée à droite). */
+  .type {
+    display: inline-flex;
+    flex: none;
+    margin-left: auto;
+    margin-right: 6px;
+  }
+
+  .type + .key {
+    margin-left: 0;
   }
 
   .key.pool {

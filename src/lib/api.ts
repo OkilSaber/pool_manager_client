@@ -136,6 +136,8 @@ export const api = {
   login: (email: string, password: string) => request<AuthResponse>('POST', '/auth/login', { email, password }),
   logout: () => request<void>('POST', '/auth/logout'),
   me: () => request<User>('GET', '/me', undefined, QUICK_TIMEOUT_MS),
+  /** Comptes inscrits sur le serveur (choix des personnes à inviter dans un pool). */
+  listUsers: () => request<User[]>('GET', '/users'),
 
   listPools: () => request<Pool[]>('GET', '/pools'),
   createPool: (name: string) => request<Pool>('POST', '/pools', { name }),

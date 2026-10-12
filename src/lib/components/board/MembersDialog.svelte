@@ -1,5 +1,5 @@
 <!--
-  Membres du pool. Propriétaire : inviter par email, retirer un membre (confirmation en place).
+  Membres du pool. Propriétaire : inviter une personne inscrite (recherche par nom ou email), retirer un membre (confirmation en place).
   Membre : quitter le pool (confirmation en place).
 -->
 <script lang="ts">
@@ -7,6 +7,9 @@
   import Avatar from '$lib/components/Avatar.svelte';
   import Modal from '$lib/components/Modal.svelte';
   import Spinner from '$lib/components/Spinner.svelte';
+  import { api } from '$lib/api';
+  import type { User } from '$lib/types/User';
+  import UserPicker from './UserPicker.svelte';
   import { board } from '$lib/stores/board.svelte';
   import { poolsCache } from '$lib/stores/pools-cache';
   import { session } from '$lib/stores/session.svelte';
@@ -16,30 +19,37 @@
 
   const uid = $props.id();
 
-  let email = $state('');
   let inviting = $state(false);
   let confirmId = $state<number | null>(null);
   let removing = $state<number | null>(null);
   let timer: ReturnType<typeof setTimeout> | undefined;
+  let users = $state<User[]>([]);
+  let usersLoading = $state(false);
 
   const me = $derived(session.user?.id ?? null);
   const members = $derived(
     [...board.members].sort((a, b) => (a.role === b.role ? a.display_name.localeCompare(b.display_name, 'fr') : a.role === 'owner' ? -1 : 1))
   );
-  const validEmail = $derived(/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email.trim()));
+  /** Inscrits qui ne sont pas encore membres. */
+  const candidates = $derived(users.filter((u) => !board.members.some((m) => m.user_id === u.id)));
 
-  async function invite(e: SubmitEvent) {
-    e.preventDefault();
-    const value = email.trim().toLowerCase();
-    if (!validEmail || inviting) return;
+  // Liste des inscrits rechargée à chaque ouverture (propriétaire seulement).
+  $effect(() => {
+    if (!open || !board.isOwner) return;
+    usersLoading = true;
+    api
+      .listUsers()
+      .then((list) => (users = list))
+      .catch((e) => toast.error(e))
+      .finally(() => (usersLoading = false));
+  });
+
+  async function invite(user: User) {
+    if (inviting) return;
     inviting = true;
-    const ok = await board.addMember(value);
+    const ok = await board.addMember(user.email);
     inviting = false;
-    if (ok) {
-      const added = board.members.find((m) => m.email.toLowerCase() === value);
-      email = '';
-      toast.success(`${added?.display_name ?? value} a rejoint le pool`);
-    }
+    if (ok) toast.success(`${user.display_name} a rejoint le pool`);
   }
 
   function arm(userId: number) {
@@ -74,27 +84,10 @@
 
 <Modal bind:open title="Membres du pool" width={480} {onclose}>
   {#if board.isOwner}
-    <form class="invite" onsubmit={invite}>
-      <label class="label" for="{uid}-email">Inviter par email</label>
-      <div class="invite-row">
-        <input
-          id="{uid}-email"
-          class="input"
-          type="email"
-          placeholder="prenom.nom@exemple.fr"
-          autocomplete="off"
-          spellcheck="false"
-          bind:value={email}
-          readonly={inviting}
-          aria-busy={inviting}
-        />
-        <button class="btn btn-primary" type="submit" disabled={!validEmail || inviting}>
-          {#if inviting}<Spinner size={12} />{/if}
-          Inviter
-        </button>
-      </div>
-      <p class="hint">La personne doit déjà avoir un compte sur ce serveur.</p>
-    </form>
+    <div class="invite">
+      <span class="label">Inviter une personne inscrite</span>
+      <UserPicker users={candidates} loading={usersLoading && users.length === 0} busy={inviting} onpick={invite} />
+    </div>
   {/if}
 
   <ul class="list" aria-label="Membres du pool">
@@ -155,21 +148,8 @@
     border-bottom: 1px solid var(--border);
   }
 
-  .invite-row {
-    display: flex;
-    gap: 8px;
-  }
 
-  .invite-row .btn {
-    height: 34px;
-    flex: none;
-  }
 
-  .hint {
-    margin: 0;
-    font-size: 12px;
-    color: var(--text-muted);
-  }
 
   .list {
     display: flex;

@@ -15,9 +15,14 @@
   const GUEST_ONLY = ['/login', '/signup', '/'];
 
   const path = $derived(page.url.pathname as string);
+  /**
+   * Aucune page ne correspond (ex. `/index.html` : l'app Tauri démarre sur ce chemin en production) :
+   * on redirige comme pour « / » au lieu d'afficher une 404.
+   */
+  const unknown = $derived(page.route.id == null);
   const isPublic = $derived(PUBLIC.includes(path));
   /** La page demandée peut s'afficher telle quelle : sinon la garde redirige, et on n'en montre rien entre-temps. */
-  const allowed = $derived(session.user ? !GUEST_ONLY.includes(path) : isPublic);
+  const allowed = $derived(!unknown && (session.user ? !GUEST_ONLY.includes(path) : isPublic));
   /** Connecté, les paramètres du serveur gardent la barre d'application (ouverts depuis le menu du compte). */
   const showHeader = $derived(session.user != null && allowed);
 
@@ -27,7 +32,7 @@
   $effect(() => {
     if (!session.ready) return;
     if (!session.user && !isPublic) goto('/login', { replaceState: true });
-    else if (session.user && GUEST_ONLY.includes(path)) goto('/pools', { replaceState: true });
+    else if (session.user && (unknown || GUEST_ONLY.includes(path))) goto('/pools', { replaceState: true });
   });
 </script>
 

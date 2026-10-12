@@ -1,6 +1,6 @@
 [package]
 name = "pool-manager"
-version = "0.2.0"
+version = "0.2.1"
 description = "Pool Manager — tableaux et chronologie"
 edition = "2021"
 

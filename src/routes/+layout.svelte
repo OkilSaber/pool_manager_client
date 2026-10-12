@@ -14,11 +14,12 @@
   /** Pages réservées aux visiteurs non connectés (ou simple redirection, pour « / »). */
   const GUEST_ONLY = ['/login', '/signup', '/'];
 
-  const path = $derived(page.url.pathname as string);
   /**
-   * Aucune page ne correspond (ex. `/index.html` : l'app Tauri démarre sur ce chemin en production) :
-   * on redirige comme pour « / » au lieu d'afficher une 404.
+   * Route reconnue par SvelteKit plutôt que `url.pathname` : dans l'app Tauri, l'URL de démarrage
+   * `tauri://localhost` a un chemin VIDE (schéma non spécial), pas « / ».
    */
+  const path = $derived((page.route.id ?? page.url.pathname) || '/');
+  /** Aucune page ne correspond (ex. `/index.html`) : on redirige comme pour « / » au lieu d'afficher une 404. */
   const unknown = $derived(page.route.id == null);
   const isPublic = $derived(PUBLIC.includes(path));
   /** La page demandée peut s'afficher telle quelle : sinon la garde redirige, et on n'en montre rien entre-temps. */

@@ -77,6 +77,10 @@ un membre peut quitter un tableau (ses parts sont redistribuées pour rester à 
 
 ## Installation
 
+Téléchargez le paquet de votre système dans les [Releases](https://github.com/OkilSaber/pool_manager_client/releases) :
+`.dmg` macOS (Apple Silicon `aarch64` ou Intel `x64`), `.deb` ou `.AppImage` Linux.
+L'app macOS n'est pas signée : au premier lancement, clic droit → **Ouvrir**.
+
 Le client a besoin d'un [serveur Pool Manager](https://github.com/OkilSaber/pool_manager_server) joignable
 (sur votre machine ou le réseau local). Au premier lancement, renseignez son adresse dans
 **Paramètres du serveur** (par défaut `http://localhost:8080`), puis créez un compte.

@@ -3,6 +3,8 @@
   - Pool : nom (renommable par son propriétaire), « Projets », membres du pool.
   - Projet : fil « Pool › » s'il est rattaché, pastille de couleur, nom (renommable), code, réglages ;
     membres du pool s'il en a un (aucun pour un projet autonome).
+  - « Colonnes » : éditeur des états (pool ou projet autonome ; lecture seule avec lien vers le pool
+    pour un projet rattaché, dont les colonnes sont celles du pool).
   Le sélecteur de vue utilise une liste dupliquée « active » découpée par clip-path :
   la couleur du libellé suit exactement l'indicateur pendant qu'il glisse.
 -->
@@ -19,6 +21,7 @@
   import ProjectsDialog from '$lib/components/projects/ProjectsDialog.svelte';
   import { board } from '$lib/stores/board.svelte';
   import MembersDialog from './MembersDialog.svelte';
+  import StatesEditor from './StatesEditor.svelte';
   import { lastInputWasKeyboard } from '$lib/modality';
   import { tooltip } from '$lib/tooltip';
 
@@ -45,6 +48,9 @@
   let membersOpen = $state(false);
   let projectsOpen = $state(false);
   let settingsOpen = $state(false);
+  let statesOpen = $state(false);
+  /** Projet rattaché : ses colonnes sont celles du pool (éditeur en lecture seule). */
+  const statesManaged = $derived(!isPool && parentPool != null);
 
   // ---------- Sélecteur de vue ----------
 
@@ -208,6 +214,26 @@
   </div>
 
   <div class="right">
+    {#if board.kind}
+      <button
+        class="btn btn-sm"
+        type="button"
+        onclick={() => (statesOpen = true)}
+        aria-label={statesManaged ? 'Colonnes (gérées par le pool)' : `Colonnes (${board.states.length})`}
+        {@attach tooltip(statesManaged ? 'Colonnes gérées par le pool' : isPool ? 'Colonnes du pool' : 'Colonnes du projet')}
+      >
+        <svg width="13" height="13" viewBox="0 0 16 16" aria-hidden="true">
+          <rect x="2" y="2.5" width="3.4" height="11" rx="1" stroke="currentColor" stroke-width="1.3" fill="none" />
+          <rect x="6.3" y="2.5" width="3.4" height="7.5" rx="1" stroke="currentColor" stroke-width="1.3" fill="none" />
+          <rect x="10.6" y="2.5" width="3.4" height="9.5" rx="1" stroke="currentColor" stroke-width="1.3" fill="none" />
+        </svg>
+        Colonnes
+        {#if !statesManaged}
+          <span class="badge num" aria-hidden="true">{board.states.length}</span>
+        {/if}
+      </button>
+    {/if}
+
     {#if isPool}
       <button class="btn btn-sm" type="button" onclick={() => (projectsOpen = true)} aria-label="Projets du pool ({activeCount})">
         <svg width="13" height="13" viewBox="0 0 16 16" aria-hidden="true">
@@ -242,6 +268,9 @@
 {/if}
 {#if isPool}
   <ProjectsDialog bind:open={projectsOpen} />
+{/if}
+{#if board.kind}
+  <StatesEditor bind:open={statesOpen} />
 {/if}
 {#if project}
   <ProjectFormDialog bind:open={settingsOpen} {project} />

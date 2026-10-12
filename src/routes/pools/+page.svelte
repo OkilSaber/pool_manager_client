@@ -12,20 +12,28 @@
 </script>
 
 <script lang="ts">
-  import { onMount, tick } from 'svelte';
+  import { onMount, tick, untrack } from 'svelte';
   import { flip } from 'svelte/animate';
   import { quartInOut } from 'svelte/easing';
+  import { SvelteSet } from 'svelte/reactivity';
   import { fade } from 'svelte/transition';
   import { goto } from '$app/navigation';
   import { api, ApiError, getServerUrl } from '$lib/api';
-  import { hue } from '$lib/avatar';
   import Modal from '$lib/components/Modal.svelte';
+  import DragGhost from '$lib/components/home/DragGhost.svelte';
+  import PoolTile from '$lib/components/home/PoolTile.svelte';
+  import ProjectTile from '$lib/components/home/ProjectTile.svelte';
+  import {
+    ProjectDrag,
+    loadExpanded,
+    saveExpanded,
+    setHomeContext,
+    type DropKey,
+    type MoveTarget
+  } from '$lib/components/home/home.svelte';
   import ProjectFormDialog from '$lib/components/projects/ProjectFormDialog.svelte';
   import BusyLabel from '$lib/components/shell/BusyLabel.svelte';
-  import DropdownMenu from '$lib/components/shell/DropdownMenu.svelte';
   import FormError from '$lib/components/shell/FormError.svelte';
-  import MenuItem from '$lib/components/shell/MenuItem.svelte';
-  import { truncatedTitle } from '$lib/components/shell/truncate';
   import { errorMessage } from '$lib/errors';
   import { lastInputWasKeyboard } from '$lib/modality';
   import { DUR, easeOut, easeOutSoft, reducedMotion } from '$lib/motion';
@@ -55,8 +63,42 @@
   const archivedProjects = $derived(standalone.filter((p) => p.archived));
   const shownProjects = $derived(showArchived ? [...activeProjects, ...archivedProjects] : activeProjects);
 
-  /** Tuile de pool dont le menu « … » est ouvert (une seule à la fois). */
-  let menuFor = $state<number | null>(null);
+  /** Projets de chaque pool (actifs d'abord, archivés ensuite), affichés quand la tuile est dépliée. */
+  const byPool = $derived.by(() => {
+    const map = new Map<number, Project[]>();
+    for (const p of projects ?? []) {
+      if (p.pool_id === null) continue;
+      const list = map.get(p.pool_id);
+      if (list) list.push(p);
+      else map.set(p.pool_id, [p]);
+    }
+    for (const list of map.values()) list.sort((a, b) => Number(a.archived) - Number(b.archived));
+    return map;
+  });
+
+  /** Pools par nom : destinations proposées dans « Déplacer vers… ». */
+  const poolsByName = $derived([...(pools ?? [])].sort((a, b) => a.name.localeCompare(b.name, 'fr')));
+
+  /**
+   * Menu « … » ouvert (un seul à la fois) : `pool:<id>` ou `project:<id>`. Sa tuile passe au-dessus des voisines.
+   */
+  let menuFor = $state<string | null>(null);
+  const raisedPool = $derived.by(() => {
+    if (!menuFor) return null;
+    if (menuFor.startsWith('pool:')) return Number(menuFor.slice(5));
+    const id = Number(menuFor.slice(8));
+    return projects?.find((p) => p.id === id)?.pool_id ?? null;
+  });
+
+  /** Pools dépliés, mémorisés d'une visite à l'autre. */
+  const expanded = new SvelteSet<number>(loadExpanded());
+  /** Projets dont le déplacement attend la réponse du serveur : ni glissables ni déplaçables d'ici là. */
+  const pending = new SvelteSet<number>();
+
+  let settingsOpen = $state(false);
+  let settingsFor = $state<Project | undefined>(undefined);
+
+  let pageEl = $state<HTMLDivElement>();
 
   let createOpen = $state(false);
   let newName = $state('');
@@ -124,19 +166,159 @@
     }
   }
 
+  /** Revalidation discrète des deux listes (compteurs des pools, cartes remappées…) après un déplacement. */
+  async function refreshAll() {
+    try {
+      const [poolList, projectList] = await Promise.all([api.listPools(), api.listProjects()]);
+      // Un autre déplacement est parti entre-temps : sa propre revalidation suivra.
+      if (pending.size > 0) return;
+      pools = poolList;
+      projects = projectList;
+      rememberPools(poolList);
+      rememberProjects(projectList);
+    } catch {
+      // Sans gravité : l'état optimiste reste affiché, la prochaine visite revalidera.
+    }
+  }
+
   onMount(() => {
     // Sans session (rendu le temps que la garde du layout redirige vers /login) : pas de requête vouée au 401.
     if (session.user) load();
+    return () => drag.destroy();
   });
 
-  function initial(name: string): string {
-    return name.trim().charAt(0).toUpperCase() || '?';
+  function toggleExpanded(id: number) {
+    if (expanded.has(id)) expanded.delete(id);
+    else expanded.add(id);
+    saveExpanded(expanded);
   }
 
-  function projectCount(n: number): string {
-    if (n === 0) return 'Aucun projet';
-    return `${n} projet${n > 1 ? 's' : ''}`;
+  // ---------- Déplacement d'un projet (glisser-déposer ou « Déplacer vers… ») ----------
+
+  /**
+   * Destinations permises (règles du serveur) : rattacher ou déplacer = propriétaire du projet (et membre du pool
+   * cible : tous les pools listés ici sont les nôtres) ; détacher = propriétaire du projet ou du pool.
+   */
+  function targets(project: Project): MoveTarget[] {
+    if (!pools || pending.has(project.id)) return [];
+    const isOwner = project.owner_id === session.user?.id;
+    const isPoolOwner = project.pool_id !== null && pools.some((p) => p.id === project.pool_id && p.role === 'owner');
+    const list: MoveTarget[] = [];
+    if (isOwner) {
+      for (const pool of poolsByName) if (pool.id !== project.pool_id) list.push({ key: pool.id, label: pool.name });
+    }
+    if (project.pool_id !== null && (isOwner || isPoolOwner)) list.push({ key: null, label: 'Aucun pool' });
+    return list;
   }
+
+  const canDrop = (project: Project, key: DropKey) => targets(project).some((t) => t.key === key);
+
+  const drag = new ProjectDrag({
+    canDrop,
+    onDrop: (project, key) => move(project, key, false),
+    scroller: () => pageEl
+  });
+
+  /** Indication portée par le fantôme au-dessus d'une cible. */
+  const dragHint = $derived.by(() => {
+    const over = drag.over;
+    if (over === undefined || !drag.project) return null;
+    if (!drag.allowed) return { text: 'Réservé au propriétaire du projet', denied: true };
+    if (over === null) return { text: 'Détacher du pool', denied: false };
+    return { text: `Rattacher à ${pools?.find((p) => p.id === over)?.name ?? 'ce pool'}`, denied: false };
+  });
+
+  /** Compteur de projets actifs des pools quittés / rejoints (les archivés n'y comptent pas). */
+  function shiftCount(from: number | null, to: number | null) {
+    if (!pools) return;
+    pools = pools.map((p) =>
+      p.id === from
+        ? { ...p, project_count: Math.max(0, p.project_count - 1) }
+        : p.id === to
+          ? { ...p, project_count: p.project_count + 1 }
+          : p
+    );
+  }
+
+  async function move(project: Project, key: DropKey, viaKeyboard: boolean) {
+    if (!projects || pending.has(project.id)) return;
+    const original = projects.find((p) => p.id === project.id);
+    if (!original || original.pool_id === key) return;
+    const from = original.pool_id;
+    // Détaché sans en être propriétaire : le projet n'est plus visible de nous (il redevient privé à son propriétaire).
+    const leaves = key === null && original.owner_id !== session.user?.id;
+    const poolName = key === null ? null : (pools?.find((p) => p.id === key)?.name ?? 'ce pool');
+
+    // Optimiste : le projet change de place tout de suite.
+    pending.add(original.id);
+    projects = leaves
+      ? projects.filter((p) => p.id !== original.id)
+      : projects.map((p) => (p.id === original.id ? { ...p, pool_id: key } : p));
+    if (!original.archived) shiftCount(from, key);
+
+    if (viaKeyboard) {
+      // Au clavier, le focus suit le projet à sa nouvelle place (le déclencheur « … » a disparu avec lui).
+      if (key !== null && !expanded.has(key)) toggleExpanded(key);
+      if (key === null && original.archived) showArchived = true;
+      await tick();
+      document.querySelector<HTMLElement>(`[data-project-link="${original.id}"]`)?.focus();
+    }
+
+    try {
+      const saved = await api.updateProject(original.id, { pool_id: key });
+      if (!leaves && projects) projects = projects.map((p) => (p.id === saved.id ? saved : p));
+      if (projects) rememberProjects($state.snapshot(projects));
+      if (pools) rememberPools($state.snapshot(pools));
+      toast.success(key === null ? `${saved.code} détaché du pool` : `${saved.code} rattaché à ${poolName}`);
+    } catch (err) {
+      // Retour à l'état d'avant, pour ce seul projet (un autre déplacement peut être en cours).
+      if (projects) {
+        projects = projects.some((p) => p.id === original.id)
+          ? projects.map((p) => (p.id === original.id ? original : p))
+          : [...projects, original];
+      }
+      if (!original.archived) shiftCount(key, from);
+      if (!(err instanceof ApiError && err.status === 401)) toast.error(err);
+    } finally {
+      pending.delete(original.id);
+      if (pending.size === 0) refreshAll();
+    }
+  }
+
+  // ---------- Réglages d'un projet (clic droit, Maj+F10, menu « … ») ----------
+
+  function openSettings(project: Project) {
+    if (drag.phase !== 'idle') return;
+    menuFor = null;
+    settingsFor = $state.snapshot(project);
+    settingsOpen = true;
+  }
+
+  function onSettingsSaved(saved: Project) {
+    if (!projects) return;
+    projects = projects.map((p) => (p.id === saved.id ? saved : p));
+    rememberProjects($state.snapshot(projects));
+  }
+
+  // À la fermeture (enregistrement, suppression ou annulation) : revalidation des deux listes.
+  let settingsWasOpen = false;
+  $effect(() => {
+    if (settingsOpen) settingsWasOpen = true;
+    else if (settingsWasOpen) {
+      settingsWasOpen = false;
+      untrack(() => refreshAll());
+    }
+  });
+
+  setHomeContext({
+    drag,
+    targets,
+    canDrag: (project) => targets(project).length > 0,
+    openSettings,
+    move,
+    menuFor: () => menuFor,
+    setMenu: (key) => (menuFor = key)
+  });
 
   // ---------- Création d'un pool ----------
 
@@ -194,7 +376,7 @@
         if (viaKeyboard) {
           // Le déclencheur « … » a disparu avec la tuile : le focus clavier va à la voisine.
           await tick();
-          const links = poolGrid?.querySelectorAll<HTMLAnchorElement>('li:not([inert]) a.tile');
+          const links = poolGrid?.querySelectorAll<HTMLAnchorElement>('li:not([inert]) a[href^="/pools/"]');
           const next = links && links.length ? links[Math.min(Math.max(index, 0), links.length - 1)] : newPoolButton;
           next?.focus();
         }
@@ -306,7 +488,7 @@
   </ul>
 {/snippet}
 
-<div class="page">
+<div class="page" bind:this={pageEl}>
   <div class="inner">
     <h1 class="page-title">Accueil</h1>
 
@@ -332,77 +514,35 @@
             <button class="btn btn-primary btn-sm" type="button" onclick={openCreate}>Créer un pool</button>
           </div>
         {:else}
-          <ul class="grid" bind:this={poolGrid}>
+          <ul class="grid pool-grid" bind:this={poolGrid}>
             {#each pools as pool, i (pool.id)}
               <li
                 class="tile-wrap"
                 class:stagger
-                class:raised={menuFor === pool.id}
+                class:raised={raisedPool === pool.id}
                 style:--i={Math.min(i, STAGGER_MAX)}
                 animate:flip={{ duration: still ? 0 : 220, easing: quartInOut }}
                 out:tileOut
               >
-                <a class="tile" href="/pools/{pool.id}">
-                  <span class="mark" style:--h={hue(pool.id)} aria-hidden="true">{initial(pool.name)}</span>
-                  <span class="tile-body">
-                    <span class="tile-name" {@attach truncatedTitle}>{pool.name}</span>
-                    <span class="meta">
-                      <span class="pill" class:owner={pool.role === 'owner'}>
-                        {pool.role === 'owner' ? 'Propriétaire' : 'Membre'}
-                      </span>
-                      <span class="meta-text num">{projectCount(pool.project_count)}</span>
-                    </span>
-                  </span>
-                </a>
-
-                {#if pool.role === 'owner'}
-                  <div class="tile-actions" class:visible={menuFor === pool.id}>
-                    <DropdownMenu
-                      label="Actions du pool {pool.name}"
-                      align="end"
-                      width={176}
-                      bind:open={
-                        () => menuFor === pool.id,
-                        (v) => {
-                          if (v) menuFor = pool.id;
-                          else if (menuFor === pool.id) menuFor = null;
-                        }
-                      }
-                    >
-                      {#snippet trigger(props)}
-                        <button {...props} class="btn btn-ghost btn-sm btn-icon more" aria-label="Actions du pool {pool.name}">
-                          <svg width="14" height="14" viewBox="0 0 16 16" aria-hidden="true">
-                            <circle cx="3.5" cy="8" r="1.25" fill="currentColor" />
-                            <circle cx="8" cy="8" r="1.25" fill="currentColor" />
-                            <circle cx="12.5" cy="8" r="1.25" fill="currentColor" />
-                          </svg>
-                        </button>
-                      {/snippet}
-                      <MenuItem danger onselect={() => askDelete(pool)}>
-                        {#snippet icon()}
-                          <svg width="14" height="14" viewBox="0 0 16 16">
-                            <path
-                              d="M2.75 4.25h10.5M6.25 4.25V3a.75.75 0 0 1 .75-.75h2a.75.75 0 0 1 .75.75v1.25M4 4.25l.6 8.4a1.25 1.25 0 0 0 1.25 1.1h4.3a1.25 1.25 0 0 0 1.25-1.1l.6-8.4"
-                              fill="none"
-                              stroke="currentColor"
-                              stroke-width="1.3"
-                              stroke-linecap="round"
-                              stroke-linejoin="round"
-                            />
-                          </svg>
-                        {/snippet}
-                        Supprimer…
-                      </MenuItem>
-                    </DropdownMenu>
-                  </div>
-                {/if}
+                <PoolTile
+                  {pool}
+                  projects={byPool.get(pool.id) ?? []}
+                  expanded={expanded.has(pool.id)}
+                  ontoggle={() => toggleExpanded(pool.id)}
+                  ondelete={askDelete}
+                />
               </li>
             {/each}
           </ul>
         {/if}
       </section>
 
-      <section class="section" aria-labelledby="projects-title">
+      <section
+        class="section drop-zone"
+        aria-labelledby="projects-title"
+        data-drop="none"
+        data-drop-state={drag.stateOf(null)}
+      >
         {@render projectsHead(activeProjects.length)}
 
         {#if shownProjects.length === 0}
@@ -428,22 +568,13 @@
               <li
                 class="tile-wrap"
                 class:stagger={stagger && !project.archived}
-                class:archived={project.archived}
+                class:raised={menuFor === `project:${project.id}`}
                 style:--i={Math.min((pools?.length ?? 0) + i, STAGGER_MAX)}
                 animate:flip={{ duration: still ? 0 : 220, easing: quartInOut }}
                 in:tileIn
                 out:tileOut
               >
-                <a class="tile tile-project" href="/projects/{project.id}">
-                  <span class="project-top">
-                    <span class="dot" style:--c={project.color} aria-hidden="true"></span>
-                    <span class="code">{project.code}</span>
-                    {#if project.archived}
-                      <span class="pill">Archivé</span>
-                    {/if}
-                  </span>
-                  <span class="tile-name" {@attach truncatedTitle}>{project.name}</span>
-                </a>
+                <ProjectTile {project} />
               </li>
             {/each}
           </ul>
@@ -541,6 +672,9 @@
 </Modal>
 
 <ProjectFormDialog bind:open={projectOpen} defaultPoolId={null} onsaved={onProjectSaved} />
+<ProjectFormDialog bind:open={settingsOpen} project={settingsFor} onsaved={onSettingsSaved} />
+
+<DragGhost {drag} hint={dragHint} />
 
 <style>
   .page {
@@ -623,24 +757,20 @@
     list-style: none;
   }
 
+  /* Tuiles de pool de hauteurs différentes (dépliées ou non) : pas d'étirement des voisines. */
+  .pool-grid {
+    align-items: start;
+  }
+
   .tile-wrap {
     position: relative;
     /* Le menu ouvert passe au-dessus des tuiles voisines ; on ne redescend qu'après sa sortie. */
-    transition:
-      transform var(--dur-press) var(--ease-out),
-      z-index 0s linear var(--dur-exit);
+    transition: z-index 0s linear var(--dur-exit);
   }
 
   .tile-wrap.raised {
     z-index: 3;
-    transition:
-      transform var(--dur-press) var(--ease-out),
-      z-index 0s;
-  }
-
-  /* Pression : toute la tuile (lien + bouton « … ») réagit ensemble */
-  .tile-wrap:has(> .tile:active) {
-    transform: scale(0.98);
+    transition: z-index 0s;
   }
 
   .stagger {
@@ -655,185 +785,45 @@
     }
   }
 
-  .tile {
+  /* ---------- Zone « Projets sans pool » (y lâcher un projet le détache) ---------- */
+
+  .drop-zone {
     position: relative;
-    display: flex;
-    flex-direction: column;
-    justify-content: space-between;
-    gap: 20px;
-    min-height: 112px;
-    padding: 16px;
-    border: 1px solid var(--border);
-    border-radius: var(--radius-lg);
-    background: var(--surface);
-    box-shadow: var(--shadow-sm);
-    color: var(--text);
-    text-decoration: none;
-    transition: border-color var(--dur-hover) ease;
+    isolation: isolate;
   }
 
-  /*
-   * Ombre de survol portée par un pseudo-élément dont on anime l'opacité (composité) plutôt que
-   * box-shadow (repeint à chaque frame). Effet de bord voulu : l'anneau de focus (box-shadow)
-   * n'est plus transitionné — il apparaît instantanément à la navigation clavier.
-   */
-  .tile::after {
+  .drop-zone::before {
     content: '';
     position: absolute;
-    inset: -1px;
-    border-radius: inherit;
-    box-shadow: var(--shadow-md);
-    opacity: 0;
+    inset: -10px -12px -12px;
+    z-index: -1;
+    border: 1.5px dashed transparent;
+    border-radius: calc(var(--radius-lg) + 6px);
     pointer-events: none;
-    transition: opacity var(--dur-hover) ease;
+    transition:
+      border-color 120ms ease,
+      background-color 120ms ease;
   }
 
-  .tile:focus-visible {
-    outline: none;
+  .drop-zone[data-drop-state='can']::before {
+    border-color: color-mix(in srgb, var(--accent) 45%, var(--border));
+  }
+
+  .drop-zone[data-drop-state='over']::before {
+    border-style: solid;
     border-color: var(--accent);
-    box-shadow: var(--focus);
-    /* Focus clavier : instantané */
-    transition-duration: 0s;
+    background: color-mix(in srgb, var(--accent-soft) 60%, transparent);
   }
 
-  .mark {
-    display: inline-flex;
-    align-items: center;
-    justify-content: center;
-    width: 28px;
-    height: 28px;
-    border-radius: var(--radius-sm);
-    font-size: 13px;
-    font-weight: 650;
-    color: hsl(var(--h) 50% 34%);
-    background: hsl(var(--h) 70% 92%);
+  /* Pendant un glissement, le curseur dit ce qui se passera au relâchement. */
+  :global(html.pm-dragging),
+  :global(html.pm-dragging *) {
+    cursor: grabbing !important;
   }
 
-  @media (prefers-color-scheme: dark) {
-    .mark {
-      color: hsl(var(--h) 70% 84%);
-      background: hsl(var(--h) 32% 25%);
-    }
-  }
-
-  .tile-body {
-    display: flex;
-    flex-direction: column;
-    align-items: flex-start;
-    gap: 6px;
-    min-width: 0;
-  }
-
-  .tile-name {
-    max-width: 100%;
-    overflow: hidden;
-    text-overflow: ellipsis;
-    white-space: nowrap;
-    font-size: 14px;
-    font-weight: 600;
-    letter-spacing: -0.005em;
-  }
-
-  .meta {
-    display: flex;
-    align-items: center;
-    gap: 8px;
-  }
-
-  .meta-text {
-    color: var(--text-muted);
-    font-size: 12px;
-  }
-
-  .pill {
-    display: inline-flex;
-    align-items: center;
-    height: 20px;
-    padding: 0 8px;
-    border-radius: 999px;
-    background: var(--surface-2);
-    color: var(--text-muted);
-    font-size: 11px;
-    font-weight: 500;
-  }
-
-  .pill.owner {
-    background: var(--accent-soft);
-    color: var(--accent);
-  }
-
-  /* Sombre : l'accent pur sur accent-soft plafonne vers 3.7:1 à 11 px — on l'éclaircit pour passer AA. */
-  @media (prefers-color-scheme: dark) {
-    .pill.owner {
-      color: color-mix(in srgb, var(--accent) 65%, white);
-    }
-  }
-
-  /* ---------- Tuiles de projet ---------- */
-
-  .tile-project {
-    min-height: 96px;
-  }
-
-  .project-top {
-    display: flex;
-    align-items: center;
-    gap: 8px;
-  }
-
-  .dot {
-    width: 10px;
-    height: 10px;
-    flex: none;
-    border-radius: 999px;
-    background: var(--c);
-    /* Liseré discret : une couleur très claire (ou très sombre) reste lisible sur la surface. */
-    box-shadow: inset 0 0 0 1px rgb(0 0 0 / 0.12);
-  }
-
-  .code {
-    display: inline-flex;
-    align-items: center;
-    height: 20px;
-    padding: 0 6px;
-    border-radius: var(--radius-sm);
-    background: var(--surface-2);
-    color: var(--text-muted);
-    font-family: var(--font-mono);
-    font-size: 11px;
-    font-weight: 600;
-    letter-spacing: 0.02em;
-  }
-
-  .project-top .pill {
-    margin-left: auto;
-  }
-
-  /* Archivé : en retrait, mais le nom reste lisible (opacité sur le contenu, pas sur la bordure). */
-  .archived .tile {
-    background: var(--surface-2);
-    box-shadow: none;
-  }
-
-  .archived .project-top,
-  .archived .tile-name {
-    opacity: 0.6;
-  }
-
-  /* Centré verticalement sur la pastille (1 px de bordure + 16 px + 28 / 2 = 31 px ; bouton de 26 px). */
-  .tile-actions {
-    position: absolute;
-    top: 18px;
-    right: 10px;
-  }
-
-  /*
-   * Couleur de .btn-ghost (text-muted) conservée : text-subtle tombait à ~2.6:1, sous le 3:1 exigé
-   * pour une icône d'action. Menu ouvert : le déclencheur reste marqué, comme le menu du compte.
-   */
-  .tile-actions.visible .more {
-    background: var(--surface-3);
-    color: var(--text);
+  :global(html.pm-drag-denied),
+  :global(html.pm-drag-denied *) {
+    cursor: not-allowed !important;
   }
 
   /* ---------- Section vide ---------- */
@@ -973,9 +963,6 @@
     .skeleton {
       --shimmer: rgb(255 255 255 / 0.05);
     }
-    .dot {
-      box-shadow: inset 0 0 0 1px rgb(255 255 255 / 0.14);
-    }
   }
 
   @keyframes shimmer {
@@ -1037,49 +1024,9 @@
     overflow-wrap: anywhere;
   }
 
-  /* ---------- Survol (pointeur fin uniquement) ---------- */
-
-  @media (hover: hover) and (pointer: fine) {
-    .tile:hover {
-      border-color: var(--border-strong);
-    }
-    .tile:hover::after {
-      opacity: 1;
-    }
-    .archived .tile:hover .project-top,
-    .archived .tile:hover .tile-name {
-      opacity: 0.85;
-    }
-
-    /*
-     * Le bouton « … » n'encombre pas la grille : il apparaît au survol ou au focus.
-     * Seule l'apparition au survol est fondue (120 ms) ; au focus clavier et à la sortie : instantané.
-     * L'opacité est portée par le bouton et non par .tile-actions : sinon, fermer le menu en cliquant
-     * hors de la tuile masquait d'un coup tout le conteneur, et le menu ne jouait jamais sa sortie.
-     */
-    .more {
-      opacity: 0;
-    }
-    .tile-wrap:hover .more {
-      opacity: 1;
-      transition:
-        opacity 120ms ease,
-        transform var(--dur-press) var(--ease-out),
-        background-color var(--dur-hover) ease,
-        color var(--dur-hover) ease;
-    }
-    .tile-wrap:focus-within .more,
-    .tile-actions.visible .more {
-      opacity: 1;
-    }
-  }
-
   /* ---------- Mouvement réduit : fondus conservés, déplacements retirés ---------- */
 
   @media (prefers-reduced-motion: reduce) {
-    .tile-wrap:has(> .tile:active) {
-      transform: none;
-    }
     .stagger {
       animation-name: tile-fade;
     }

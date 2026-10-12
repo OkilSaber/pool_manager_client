@@ -1,5 +1,7 @@
 <div align="center">
 
+<img src="src-tauri/icons/128x128@2x.png" width="104" alt="" />
+
 # Pool Manager
 
 **Tableaux Kanban et chronologie pour planifier le travail d'une petite équipe.**

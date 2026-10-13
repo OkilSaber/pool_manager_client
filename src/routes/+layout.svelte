@@ -5,7 +5,9 @@
   import AppHeader from '$lib/components/AppHeader.svelte';
   import Spinner from '$lib/components/Spinner.svelte';
   import Toaster from '$lib/components/Toaster.svelte';
+  import UpdateDialog from '$lib/components/shell/UpdateDialog.svelte';
   import { session } from '$lib/stores/session.svelte';
+  import { updates } from '$lib/stores/updates.svelte';
   import type { Snippet } from 'svelte';
 
   let { children }: { children: Snippet } = $props();
@@ -28,6 +30,7 @@
   const showHeader = $derived(session.user != null && allowed);
 
   session.init();
+  updates.start();
 
   // Garde de navigation : non connecté → /login ; connecté sur login/signup → /pools.
   $effect(() => {
@@ -55,6 +58,7 @@
   {/if}
 </div>
 <Toaster />
+<UpdateDialog />
 
 <style>
   .app {

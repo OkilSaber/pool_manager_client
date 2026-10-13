@@ -1,8 +1,9 @@
-<!-- Menu du compte (barre d'application) : identité, paramètres du serveur, déconnexion. -->
+<!-- Menu du compte (barre d'application) : identité, paramètres du serveur, mises à jour, déconnexion. -->
 <script lang="ts">
   import { goto } from '$app/navigation';
   import Avatar from '$lib/components/Avatar.svelte';
   import { session } from '$lib/stores/session.svelte';
+  import { updates } from '$lib/stores/updates.svelte';
   import DropdownMenu from './DropdownMenu.svelte';
   import MenuItem from './MenuItem.svelte';
   import { truncatedTitle } from './truncate';
@@ -40,6 +41,22 @@
         </svg>
       {/snippet}
       Paramètres du serveur
+    </MenuItem>
+    <MenuItem onselect={() => updates.check(true)} disabled={updates.checking}>
+      {#snippet icon()}
+        <svg width="14" height="14" viewBox="0 0 16 16">
+          <path
+            d="M13.25 8a5.25 5.25 0 1 1-1.54-3.71M13.25 2.75v2.5h-2.5"
+            fill="none"
+            stroke="currentColor"
+            stroke-width="1.3"
+            stroke-linecap="round"
+            stroke-linejoin="round"
+          />
+        </svg>
+      {/snippet}
+      Rechercher des mises à jour
+      <span class="version num">v{updates.current}</span>
     </MenuItem>
     <MenuItem onselect={() => session.logout()}>
       {#snippet icon()}
@@ -112,6 +129,12 @@
 
   .chevron {
     flex: none;
+    color: var(--text-subtle);
+  }
+
+  .version {
+    margin-left: 4px;
+    font-size: 11.5px;
     color: var(--text-subtle);
   }
 

@@ -80,7 +80,7 @@ function timeoutSignal(ms: number): AbortSignal {
   return ctrl.signal;
 }
 
-async function doFetch(url: string, init: RequestInit, timeoutMs = REQUEST_TIMEOUT_MS): Promise<Response> {
+export async function doFetch(url: string, init: RequestInit, timeoutMs = REQUEST_TIMEOUT_MS): Promise<Response> {
   const withTimeout: RequestInit = { ...init, signal: timeoutSignal(timeoutMs) };
   if (isTauri) {
     const { fetch } = await import('@tauri-apps/plugin-http');

@@ -51,10 +51,15 @@ sa charge en jours/homme.
 </picture>
 
 - **Projet** (obligatoire) et référence `CODE-n`.
+- **Type** facultatif (Bug, Documentation, Build…), personnalisable par pool, représenté par un glyphe en couleur.
 - **Priorité** P0 (critique) → P4 (minime), **chiffrage** en jours/homme, **date de début**.
-- **Plusieurs assignés** avec une **répartition de la charge en %** (total = 100 %).
-- **Fin prévue calculée** en jours ouvrés : la durée est celle de la plus grosse part
-  (10 j/h à 50/50 → 5 jours ; 70/30 → 7 jours), week-ends sautés.
+- **Plusieurs assignés** : répartition de la charge **en % ou en j/h**, taux d'occupation et date de début
+  propres à chacun.
+- **Fin prévue calculée** en jours ouvrés, par assigné puis pour la carte (10 j/h à 50/50 → 5 jours ;
+  70/30 → 7 jours), week-ends sautés.
+- **Pause / reprise** d'une assignation : les jours de pause décalent la fin de sa part (une pause en cours
+  compte jusqu'à aujourd'hui) ; historique des pauses modifiable.
+- **Commentaires** sous la carte (modifiables par leur auteur), nombre affiché sur le Kanban.
 - Enregistrement automatique de chaque champ.
 
 ### Chronologie
@@ -65,7 +70,8 @@ sa charge en jours/homme.
 </picture>
 
 - Zoom **Jour / Semaine / Mois**, week-ends grisés, repère « Aujourd'hui ».
-- Regroupement **par projet**, **par état**, **par assigné** (avec la charge de chacun) ou sans regroupement.
+- Regroupement **par projet**, **par état**, **par type**, **par assigné** (avec la charge de chacun) ou sans regroupement.
+- Une barre par assigné ; les **jours de pause hachurés**, détaillés dans l'infobulle.
 - **Glisser une barre** pour replanifier (aimantée au jour, Échap pour annuler), ou ←/→ au clavier.
 - Les cartes sans date ou sans chiffrage sont listées à part, planifiables en un clic.
 
@@ -91,6 +97,10 @@ Les assignés d'une carte sont choisis parmi les membres du pool.
 - Thème clair et sombre automatiques (suivent le système).
 - Animations courtes et nettes, aucune animation sur les actions clavier, respect de « Réduire les animations ».
 - Navigable au clavier, interface entièrement en français.
+- **Mises à jour** : au lancement puis toutes les 6 h, l'application compare sa version à la dernière
+  [release GitHub](https://github.com/OkilSaber/pool_manager_client/releases/latest) ; une nouvelle version
+  est signalée dans la barre (notes de version, téléchargement, « Ignorer cette version »). Vérification
+  manuelle depuis le menu du compte.
 
 ## Installation
 

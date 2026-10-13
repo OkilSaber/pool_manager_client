@@ -5,11 +5,12 @@
   aimanté au jour, bulle de dates au-dessus ; au relâchement la barre se pose en douceur à sa nouvelle place.
   Échap annule (retour immédiat : action clavier). Clavier : Entrée ouvre, ←/→ décale d'un jour ouvré (Maj : 5), sans animation.
   L'état du drag reste local à la barre : les autres lignes ne sont pas re-rendues pendant le geste.
+  Jours de pause compris dans la barre : hachures diagonales (une pause en cours, jusqu'à aujourd'hui inclus).
 -->
 <script lang="ts">
   import { tick } from 'svelte';
   import Avatar from '$lib/components/Avatar.svelte';
-  import { addWorkingDays, formatLong } from '$lib/dates';
+  import { addWorkingDays, formatLong, pausedRanges } from '$lib/dates';
   import { fmtPct } from '$lib/format';
   import { reducedMotion } from '$lib/motion';
   import { priority } from '$lib/priority';
@@ -92,10 +93,19 @@
       ? `le ${formatLong(segment.start)}`
       : `du ${formatLong(segment.start)} au ${formatLong(segment.end)}`
   );
+  /** Morceaux de la barre en pause (px depuis son bord gauche) ; le liseré gauche (3 px) reste visible. */
+  const hatches = $derived(
+    pausedRanges(segment.start, segment.end, segment.pauses).map((r) => {
+      const x = (r.start - segment.start) * dayWidth;
+      const left = Math.max(x, 3);
+      return { key: r.start, left, width: Math.max(1, (r.end - r.start + 1) * dayWidth - (left - x)) };
+    })
+  );
+  const pausedDays = $derived(person ? (person.schedule?.paused_days ?? 0) : (card.assignees[0]?.schedule?.paused_days ?? 0));
   const ariaLabel = $derived(
-    person
+    (person
       ? `${ref} ${card.title}, part de ${personName} (${fmtPct(Math.round(person.pct * 100) / 100)}), ${when}`
-      : `${ref} ${card.title}, ${when}`
+      : `${ref} ${card.title}, ${when}`) + (hatches.length && pausedDays > 0 ? `, dont ${pausedDays} jour${pausedDays > 1 ? 's' : ''} de pause` : '')
   );
 
   // ---------- Drag ----------
@@ -114,7 +124,7 @@
   let moved = $state(false);
   let delta = $state(0);
   let pillBelow = $state(false);
-  const preview = $derived(moved ? shiftSchedule(segment.start, segment.workingDays, delta) : null);
+  const preview = $derived(moved ? shiftSchedule(segment.start, segment.workingDays, delta, segment.pauses) : null);
 
   function snapMs(): number {
     // Aimanter par pas de 40 px est sec : un très court ease-out lisse les pas (transition CSS, interruptible).
@@ -244,7 +254,7 @@
       onopen();
       return;
     }
-    const target = shiftSchedule(origin, segment.workingDays, d);
+    const target = shiftSchedule(origin, segment.workingDays, d, segment.pauses);
     // Lâchée sur le week-end qui précède son début : même jour ouvré, rien à enregistrer.
     if (d === 0 || target.start === origin) {
       returnHome(true);
@@ -348,6 +358,9 @@
   {onpointerleave}
   {onkeydown}
 >
+  {#each hatches as h (h.key)}
+    <span class="pause" style:left="{h.left}px" style:width="{h.width}px" aria-hidden="true"></span>
+  {/each}
   {#if split}
     {#if inside}
       {@render own()}
@@ -425,6 +438,26 @@
 
   .bar.outside {
     padding: 0;
+  }
+
+  /*
+   * Jours de pause : la barre « s'évide » (fond de surface) sous des hachures diagonales de sa couleur, atténuée.
+   * z-index négatif dans le contexte d'empilement de la barre : sous le titre et les avatars, au-dessus du fond.
+   */
+  .pause {
+    position: absolute;
+    top: 1px;
+    bottom: 1px;
+    z-index: -1;
+    border-radius: 2px;
+    background:
+      repeating-linear-gradient(
+        -45deg,
+        color-mix(in srgb, var(--c) 30%, transparent) 0 2px,
+        transparent 2px 6px
+      ),
+      color-mix(in srgb, var(--c) 5%, var(--surface));
+    pointer-events: none;
   }
 
   /* Part d'un assigné : avatar en tête, juste après le liseré. */

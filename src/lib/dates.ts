@@ -1,7 +1,9 @@
 // Dates « calendaires » YYYY-MM-DD manipulées en jours depuis l'epoch (UTC) : pas de piège de fuseau ni d'heure d'été.
 // Miroir TypeScript de server/crates/shared/src/schedule.rs (utilisé pour les mises à jour optimistes et l'aperçu de drag).
 
+import type { Assignee } from './types/Assignee';
 import type { Card } from './types/Card';
+import type { Pause } from './types/Pause';
 import type { Schedule } from './types/Schedule';
 
 const MS_PER_DAY = 86_400_000;
@@ -85,13 +87,63 @@ function inCalendar(day: number): boolean {
   return y >= 1 && y <= 9999;
 }
 
-/** `days` jours ouvrés à partir du premier jour ouvré à partir de `raw`. */
-function span(raw: number | null, days: number | null): Schedule | null {
-  if (raw == null || days == null || !inCalendar(raw)) return null;
+/** Intervalle de pause en jours epoch : `[début, reprise)`. */
+export type PauseSpan = [start: number, end: number];
+
+/**
+ * Intervalles `[début, reprise)` des pauses, triés et fusionnés (chevauchants ou contigus).
+ * Une pause en cours dure jusqu'à `todayDay` inclus, et au moins son premier jour (pause qui commence demain).
+ * Une pause aux dates illisibles ou vide (reprise ≤ début) est ignorée : le serveur ne les enregistre pas.
+ */
+export function pauseIntervals(pauses: readonly Pause[] | null | undefined, todayDay: number = today()): PauseSpan[] {
+  const spans: PauseSpan[] = [];
+  for (const p of pauses ?? []) {
+    const start = toDay(p.start_date);
+    if (start == null) continue;
+    const end = p.end_date == null ? Math.max(todayDay, start) + 1 : toDay(p.end_date);
+    if (end != null && end > start) spans.push([start, end]);
+  }
+  spans.sort((a, b) => a[0] - b[0] || a[1] - b[1]);
+  const merged: PauseSpan[] = [];
+  for (const [start, end] of spans) {
+    const last = merged.at(-1);
+    if (last && start <= last[1]) last[1] = Math.max(last[1], end);
+    else merged.push([start, end]);
+  }
+  return merged;
+}
+
+/**
+ * `days` jours ouvrés travaillés à partir du premier jour ouvré à partir de `raw`, en sautant les jours ouvrés
+ * des pauses (triées et fusionnées) ; en temps constant par pause, comme le serveur. `start` reste le début prévu
+ * même si une pause le couvre ; `paused` = jours ouvrés de pause entre le début et la fin.
+ */
+export function planDays(raw: number, days: number, pauses: readonly PauseSpan[] = []): { start: number; end: number; paused: number } {
   const start = nextWorkingDay(raw);
-  const end = addWorkingDays(start, days - 1);
+  let remaining = days;
+  let cursor = start;
+  let paused = 0;
+  for (const [ps, pe] of pauses) {
+    if (pe <= cursor) continue;
+    if (ps > cursor) {
+      const available = countWorkingDays(cursor, ps - 1);
+      if (remaining <= available) break;
+      remaining -= available;
+      cursor = ps;
+    }
+    // Le curseur est dans la pause : ses jours ouvrés restants sont des jours de pause.
+    paused += countWorkingDays(cursor, pe - 1);
+    cursor = nextWorkingDay(pe);
+  }
+  return { start, end: addWorkingDays(cursor, remaining - 1), paused };
+}
+
+/** `days` jours ouvrés travaillés à partir du premier jour ouvré à partir de `raw`, pauses sautées. */
+function span(raw: number | null, days: number | null, pauses: readonly PauseSpan[] = []): Schedule | null {
+  if (raw == null || days == null || !inCalendar(raw)) return null;
+  const { start, end, paused } = planDays(raw, days, pauses);
   if (!inCalendar(start) || !inCalendar(end)) return null;
-  return { start: fromDay(start), end: fromDay(end), working_days: days };
+  return { start: fromDay(start), end: fromDay(end), working_days: days, paused_days: paused };
 }
 
 /** Planification d'une carte sans assigné : tout le chiffrage à partir de sa date de début. */
@@ -101,21 +153,25 @@ export function computeSchedule(startDate: string | null | undefined, estimateDa
 
 /**
  * Planification d'un assigné : sa part du chiffrage, étalée selon son occupation,
- * à partir de sa propre date de début ou, à défaut, de celle de la carte.
+ * à partir de sa propre date de début ou, à défaut, de celle de la carte, en sautant ses pauses
+ * (une pause en cours dure jusqu'à aujourd'hui inclus).
  */
 export function assigneeSchedule(
   cardStart: string | null | undefined,
   ownStart: string | null | undefined,
   estimateDays: number | null | undefined,
   pct: number,
-  occupancy: number = DEFAULT_OCCUPANCY
+  occupancy: number = DEFAULT_OCCUPANCY,
+  pauses: readonly Pause[] = [],
+  todayDay: number = today()
 ): Schedule | null {
-  return span(toDay(ownStart || cardStart), workingDays(estimateDays, pct, occupancy));
+  return span(toDay(ownStart || cardStart), workingDays(estimateDays, pct, occupancy), pauseIntervals(pauses, todayDay));
 }
 
 /**
  * Planification agrégée d'une carte : sans assigné, comme `computeSchedule` ; avec assignés, du plus tôt
- * de leurs débuts à la plus tardive de leurs fins (null si aucun n'est planifié).
+ * de leurs débuts à la plus tardive de leurs fins (null si aucun n'est planifié), pauses comprises dans
+ * `working_days` (`paused_days` reste 0 : les pauses sont détaillées par assigné).
  */
 export function cardSchedule(
   cardStart: string | null | undefined,
@@ -132,7 +188,27 @@ export function cardSchedule(
     if (b != null && (hi == null || b > hi)) hi = b;
   }
   if (lo == null || hi == null) return null;
-  return { start: fromDay(lo), end: fromDay(hi), working_days: countWorkingDays(lo, hi) };
+  return { start: fromDay(lo), end: fromDay(hi), working_days: countWorkingDays(lo, hi), paused_days: 0 };
+}
+
+/** Pause en cours d'un assigné (la dernière, sans reprise), sinon null. */
+export function openPause(a: Pick<Assignee, 'pauses'>): Pause | null {
+  const last = a.pauses.at(-1);
+  return last && last.end_date == null ? last : null;
+}
+
+/**
+ * Jours (calendaires, inclus) de `[start, end]` couverts par des pauses : morceaux `{ start, end }` à hachurer
+ * sur la chronologie (une pause en cours, jusqu'à aujourd'hui inclus).
+ */
+export function pausedRanges(start: number, end: number, pauses: readonly PauseSpan[]): { start: number; end: number }[] {
+  const out: { start: number; end: number }[] = [];
+  for (const [ps, pe] of pauses) {
+    const a = Math.max(ps, start);
+    const b = Math.min(pe - 1, end);
+    if (a <= b) out.push({ start: a, end: b });
+  }
+  return out;
 }
 
 /** Ordre des assignés renvoyé par le serveur : part décroissante, puis id. */
@@ -140,11 +216,12 @@ export function byShare(a: { pct: number; user_id: number }, b: { pct: number; u
   return b.pct - a.pct || a.user_id - b.user_id;
 }
 
-/** Carte avec les planifications (de chaque assigné et agrégée) recalculées : miroir des mises à jour optimistes. */
+/** Carte avec les planifications (de chaque assigné, pauses comprises, et agrégée) recalculées : miroir des mises à jour optimistes. */
 export function withSchedules(card: Card): Card {
+  const now = today();
   const assignees = card.assignees.map((a) => ({
     ...a,
-    schedule: assigneeSchedule(card.start_date, a.start_date, card.estimate_days, a.pct, a.occupancy)
+    schedule: assigneeSchedule(card.start_date, a.start_date, card.estimate_days, a.pct, a.occupancy, a.pauses, now)
   }));
   return {
     ...card,
@@ -164,6 +241,20 @@ const fmtMonth = new Intl.DateTimeFormat('fr-FR', { month: 'long', year: 'numeri
 /** « 5 oct. » */
 export function formatShort(day: number): string {
   return fmtShort.format(new Date(day * MS_PER_DAY));
+}
+
+/** Libellé d'une pause : « En pause depuis le 12 oct. », « En pause le 12 oct. », « En pause du 12 au 15 oct. ». */
+export function formatPause(p: Pause): string {
+  const start = toDay(p.start_date);
+  if (start == null) return 'En pause';
+  const end = toDay(p.end_date);
+  if (end == null) return `En pause depuis le ${formatShort(start)}`;
+  // Dernier jour ouvré non travaillé (la reprise est exclue) : une pause du vendredi au lundi s'arrête vendredi.
+  let last = end - 1;
+  while (last > start && isWeekend(last)) last -= 1;
+  if (last <= start) return `En pause le ${formatShort(start)}`;
+  const sameMonth = p.start_date.slice(0, 7) === fromDay(last).slice(0, 7);
+  return `En pause du ${sameMonth ? dayOfMonth(start) : formatShort(start)} au ${formatShort(last)}`;
 }
 
 /** « lun. 5 oct. 2026 » */

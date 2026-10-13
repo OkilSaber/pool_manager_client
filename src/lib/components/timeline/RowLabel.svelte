@@ -1,9 +1,13 @@
-<!-- Cellule de libellé collante (sticky left) d'une ligne de carte : priorité + type + référence (CODE-n) + titre ; un clic ouvre la carte. -->
+<!--
+  Cellule de libellé collante (sticky left) d'une ligne de carte : priorité + type + référence (CODE-n) + titre ;
+  icône pause (ambre) si une personne de la ligne est en pause aujourd'hui. Un clic ouvre la carte.
+-->
 <script lang="ts">
   import CardTypeIcon from '$lib/components/CardTypeIcon.svelte';
   import PriorityBadge from '$lib/components/PriorityBadge.svelte';
   import { board } from '$lib/stores/board.svelte';
   import type { Card } from '$lib/types/Card';
+  import { formatShort, toDay } from '$lib/dates';
   import { fmtPct } from '$lib/format';
   import { tooltip } from '$lib/tooltip';
   import { LABEL_WIDTH } from './timeline';
@@ -11,12 +15,30 @@
   let {
     card,
     pct = null,
+    paused = [],
     indent = false,
     onopen
-  }: { card: Card; pct?: number | null; indent?: boolean; onopen: () => void } = $props();
+  }: {
+    card: Card;
+    pct?: number | null;
+    /** Personnes de la ligne en pause aujourd'hui, avec leur premier jour de pause */
+    paused?: { userId: number; since: string }[];
+    indent?: boolean;
+    onopen: () => void;
+  } = $props();
 
   const ref = $derived(board.cardKey(card));
   const type = $derived(board.type(card.type_id));
+  /** « Alice en pause depuis le 12 oct. » ; plusieurs personnes : séparées par « · ». */
+  const pausedText = $derived(
+    paused
+      .map((p) => {
+        const who = board.member(p.userId)?.display_name ?? 'Ancien membre';
+        const since = toDay(p.since);
+        return since != null ? `${who} en pause depuis le ${formatShort(since)}` : `${who} en pause`;
+      })
+      .join(' · ')
+  );
 </script>
 
 <button class="label" class:indent type="button" style:width="{LABEL_WIDTH}px" title="{ref}{type ? ` · ${type.name}` : ''} · {card.title}" onclick={onopen}>
@@ -26,6 +48,13 @@
     {ref}
   </span>
   <span class="title">{card.title}</span>
+  {#if pausedText}
+    <span class="paused" role="img" aria-label={pausedText} {@attach tooltip(pausedText)}>
+      <svg width="12" height="12" viewBox="0 0 16 16" aria-hidden="true">
+        <path d="M6 4v8M10 4v8" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" />
+      </svg>
+    </span>
+  {/if}
   {#if pct != null}
     <span class="pct num" {@attach tooltip('Part de la charge')}>{fmtPct(pct)}</span>
   {/if}
@@ -79,6 +108,13 @@
     overflow: hidden;
     text-overflow: ellipsis;
     white-space: nowrap;
+  }
+
+  /* Ambre discret (priorité P2), comme sur le Kanban. */
+  .paused {
+    display: inline-flex;
+    flex: none;
+    color: color-mix(in srgb, var(--p2) 85%, var(--text));
   }
 
   .pct {

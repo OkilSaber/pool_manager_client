@@ -6,7 +6,7 @@
   import Avatar from '$lib/components/Avatar.svelte';
   import CardTypeIcon from '$lib/components/CardTypeIcon.svelte';
   import PriorityBadge from '$lib/components/PriorityBadge.svelte';
-  import { dayOfMonth, formatShort, toDay } from '$lib/dates';
+  import { dayOfMonth, formatShort, openPause, toDay } from '$lib/dates';
   import { board } from '$lib/stores/board.svelte';
   import type { Card } from '$lib/types/Card';
   import { fmtEstimate, fmtPct, fmtWorkingDays } from '$lib/format';
@@ -39,7 +39,22 @@
   });
 
   const hasDescription = $derived(card.description.trim().length > 0);
-  const hasMeta = $derived(card.estimate_days != null || span != null || people.length > 0);
+
+  /** Assignés en pause : « Alice en pause depuis le 12 oct. » (plusieurs : séparés par « · »). */
+  const paused = $derived.by(() => {
+    const list = card.assignees.flatMap((a) => {
+      const p = openPause(a);
+      const since = p ? toDay(p.start_date) : null;
+      if (!p) return [];
+      const who = board.member(a.user_id)?.display_name ?? 'Membre retiré';
+      return [since != null ? `${who} en pause depuis le ${formatShort(since)}` : `${who} en pause`];
+    });
+    return list.length ? list.join(' · ') : null;
+  });
+  const comments = $derived(card.comment_count);
+  const commentLabel = $derived(`${comments} commentaire${comments > 1 ? 's' : ''}`);
+
+  const hasMeta = $derived(card.estimate_days != null || span != null || people.length > 0 || comments > 0 || paused != null);
 
   // Référence `CODE-n` ; en vue pool, avec la pastille du projet (les cartes de plusieurs projets s'y mêlent).
   const project = $derived(board.projectOf(card.project_id));
@@ -80,6 +95,27 @@
             <path d="M2.5 6.5h11M5.5 2v3M10.5 2v3" stroke="currentColor" stroke-width="1.3" stroke-linecap="round" />
           </svg>
           {span.text}
+        </span>
+      {/if}
+      {#if comments > 0}
+        <span class="chip num" role="img" aria-label={commentLabel} {@attach tooltip(commentLabel)}>
+          <svg width="12" height="12" viewBox="0 0 16 16" aria-hidden="true">
+            <path
+              d="M3 3.5h10a1 1 0 0 1 1 1v6a1 1 0 0 1-1 1H7l-3 2.5V11.5H3a1 1 0 0 1-1-1v-6a1 1 0 0 1 1-1z"
+              stroke="currentColor"
+              stroke-width="1.3"
+              stroke-linejoin="round"
+              fill="none"
+            />
+          </svg>
+          {comments}
+        </span>
+      {/if}
+      {#if paused}
+        <span class="chip paused" role="img" aria-label={paused} {@attach tooltip(paused)}>
+          <svg width="12" height="12" viewBox="0 0 16 16" aria-hidden="true">
+            <path d="M6 4v8M10 4v8" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" />
+          </svg>
         </span>
       {/if}
       {#if people.length}
@@ -230,6 +266,11 @@
 
   .chip svg {
     color: var(--text-subtle);
+  }
+
+  /* Assigné en pause : ambre discret (la priorité P2), l'information tient dans l'icône et son infobulle. */
+  .chip.paused svg {
+    color: color-mix(in srgb, var(--p2) 85%, var(--text));
   }
 
   .people {

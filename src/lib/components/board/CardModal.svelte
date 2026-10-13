@@ -22,6 +22,7 @@
   import type { UpdateCard } from '$lib/types/UpdateCard';
   import { lastProject, rememberProject } from '$lib/components/projects/project';
   import AssigneeEditor from './AssigneeEditor.svelte';
+  import CardComments from './CardComments.svelte';
   import TypeSelect from './TypeSelect.svelte';
   import { formatDayRange } from '$lib/components/timeline/timeline';
   import { autosize } from './autosize';
@@ -489,6 +490,7 @@
 
         {#if card}
           <AssigneeEditor {card} onsaved={flashSaved} />
+          <CardComments {card} />
         {:else}
           <div class="field">
             <span class="label">Assignés</span>

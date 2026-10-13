@@ -6,17 +6,20 @@ import type { AssigneeInput } from './types/AssigneeInput';
 import type { AuthResponse } from './types/AuthResponse';
 import type { Card } from './types/Card';
 import type { CardType } from './types/CardType';
+import type { Comment } from './types/Comment';
 import type { CreateCard } from './types/CreateCard';
 import type { CreateCardType } from './types/CreateCardType';
 import type { CreateProject } from './types/CreateProject';
 import type { CreateState } from './types/CreateState';
 import type { Member } from './types/Member';
+import type { PauseDate } from './types/PauseDate';
 import type { Pool } from './types/Pool';
 import type { Project } from './types/Project';
 import type { ScopeDetail } from './types/ScopeDetail';
 import type { State } from './types/State';
 import type { UpdateCard } from './types/UpdateCard';
 import type { UpdateCardType } from './types/UpdateCardType';
+import type { UpdatePause } from './types/UpdatePause';
 import type { UpdateProject } from './types/UpdateProject';
 import type { UpdateState } from './types/UpdateState';
 import type { User } from './types/User';
@@ -172,5 +175,24 @@ export const api = {
   getCard: (id: number) => request<Card>('GET', `/cards/${id}`),
   updateCard: (id: number, patch: UpdateCard) => request<Card>('PATCH', `/cards/${id}`, patch),
   setAssignees: (id: number, assignees: AssigneeInput[]) => request<Card>('PUT', `/cards/${id}/assignees`, assignees),
-  deleteCard: (id: number) => request<void>('DELETE', `/cards/${id}`)
+  deleteCard: (id: number) => request<void>('DELETE', `/cards/${id}`),
+
+  // Pauses d'un assigné : chaque route renvoie la carte complète, planifications recalculées.
+  /** Pause à partir de `date` (aujourd'hui par défaut) ; 409 si déjà en pause. */
+  pauseAssignee: (cardId: number, userId: number, date?: string) =>
+    request<Card>('POST', `/cards/${cardId}/assignees/${userId}/pause`, (date ? { date } : {}) satisfies PauseDate),
+  /** Reprise le jour `date` (aujourd'hui par défaut) ; 409 sans pause en cours. */
+  resumeAssignee: (cardId: number, userId: number, date?: string) =>
+    request<Card>('POST', `/cards/${cardId}/assignees/${userId}/resume`, (date ? { date } : {}) satisfies PauseDate),
+  /** `end_date: null` rouvre la pause. */
+  updatePause: (id: number, patch: UpdatePause) => request<Card>('PATCH', `/pauses/${id}`, patch),
+  deletePause: (id: number) => request<Card>('DELETE', `/pauses/${id}`),
+
+  /** Commentaires d'une carte, du plus ancien au plus récent. */
+  listComments: (cardId: number) => request<Comment[]>('GET', `/cards/${cardId}/comments`),
+  createComment: (cardId: number, body: string) => request<Comment>('POST', `/cards/${cardId}/comments`, { body }),
+  /** Auteur seulement. */
+  updateComment: (id: number, body: string) => request<Comment>('PATCH', `/comments/${id}`, { body }),
+  /** Auteur, propriétaire du projet ou du pool. */
+  deleteComment: (id: number) => request<void>('DELETE', `/comments/${id}`)
 };

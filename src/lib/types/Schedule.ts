@@ -2,14 +2,20 @@
 
 export type Schedule = { 
 /**
- * Début effectif (décalé au lundi si la date saisie tombe un week-end)
+ * Début effectif (décalé au lundi si la date saisie tombe un week-end), même si une pause le couvre
  */
 start: string, 
 /**
- * Dernier jour ouvré inclus
+ * Dernier jour ouvré réellement travaillé, inclus
  */
 end: string, 
 /**
- * Durée en jours ouvrés
+ * Durée en jours ouvrés travaillés : pour un assigné, sa part (pauses non comprises) ;
+ * pour la carte, les jours ouvrés de `start` à `end`
  */
-working_days: number, };
+working_days: number, 
+/**
+ * Jours ouvrés de pause entre `start` et `end` (assigné : `working_days + paused_days` = jours ouvrés
+ * de `start` à `end`) ; toujours 0 pour la carte, dont `working_days` couvre déjà toute l'étendue
+ */
+paused_days: number, };

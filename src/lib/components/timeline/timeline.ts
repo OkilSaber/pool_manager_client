@@ -2,20 +2,25 @@
 // Tout est en jours epoch (cf. $lib/dates) : aucune dépendance au fuseau horaire.
 
 import {
-  addWorkingDays,
   dayOfMonth,
   formatLong,
   formatMonth,
   formatShort,
   isoWeek,
   isWeekend,
-  nextWorkingDay,
+  openPause,
+  pauseIntervals,
+  planDays,
   startOfMonth,
   startOfWeek,
+  today,
   toDay,
-  weekday
+  weekday,
+  type PauseSpan
 } from '$lib/dates';
+import type { Assignee } from '$lib/types/Assignee';
 import type { Card } from '$lib/types/Card';
+import type { Pause } from '$lib/types/Pause';
 import type { Member } from '$lib/types/Member';
 import { glyphColor } from '$lib/components/CardTypeIcon.svelte';
 import type { CardType } from '$lib/types/CardType';
@@ -230,7 +235,10 @@ export interface Segment {
   userId: number | null;
   start: number;
   end: number;
+  /** Jours ouvrés travaillés (pauses non comprises) : durée conservée quand on déplace la barre */
   workingDays: number;
+  /** Pauses de la personne (ou communes à tous les assignés pour la barre de la carte), `[début, reprise)` fusionnées */
+  pauses: PauseSpan[];
   /** Rangée dans la ligne (parts qui se chevauchent : empilées), de 0 à `lanes - 1` */
   lane: number;
 }
@@ -249,6 +257,8 @@ export interface TimelineRow {
   split: boolean;
   /** Nombre de rangées nécessaires pour que les parts ne se chevauchent pas */
   lanes: number;
+  /** Personnes de la ligne en pause aujourd'hui (icône sur le libellé) ; vide sinon */
+  paused: { userId: number; since: string }[];
 }
 
 export interface TimelineGroup {
@@ -276,35 +286,70 @@ function span(s: Schedule | null): { start: number; end: number; workingDays: nu
   return { start: a, end: Math.max(a, b), workingDays: s.working_days };
 }
 
+/** Intersection de deux listes d'intervalles `[début, reprise)` triés et disjoints. */
+function intersect(a: PauseSpan[], b: PauseSpan[]): PauseSpan[] {
+  const out: PauseSpan[] = [];
+  let i = 0;
+  let j = 0;
+  while (i < a.length && j < b.length) {
+    const start = Math.max(a[i][0], b[j][0]);
+    const end = Math.min(a[i][1], b[j][1]);
+    if (start < end) out.push([start, end]);
+    if (a[i][1] < b[j][1]) i++;
+    else j++;
+  }
+  return out;
+}
+
+/** Pauses communes à tous les assignés (barre de la carte) : avec un seul assigné, les siennes. */
+function commonPauses(assignees: Assignee[], todayDay: number): PauseSpan[] {
+  if (!assignees.length) return [];
+  return assignees.map((a) => pauseIntervals(a.pauses, todayDay)).reduce(intersect);
+}
+
+/** Personnes en pause aujourd'hui (pause en cours déjà commencée), avec leur premier jour de pause. */
+function pausedNow(assignees: Assignee[], todayDay: number): { userId: number; since: string }[] {
+  return assignees.flatMap((a) => {
+    const p = openPause(a);
+    const since = toDay(p?.start_date);
+    return p && since != null && since <= todayDay ? [{ userId: a.user_id, since: p.start_date }] : [];
+  });
+}
+
 /**
  * Ligne d'une carte. Plusieurs assignés : une part par personne, chacune à ses dates (empilées si elles se
  * chevauchent). Sinon une seule barre ; avec un seul assigné qui a sa propre date, la déplacer change cette date
- * (celle de la carte ne la ferait pas bouger).
+ * (celle de la carte ne la ferait pas bouger). Avec un seul assigné, la barre de la carte est sa part : elle en
+ * reprend les pauses et la durée travaillée (pour l'aperçu du glisser).
  */
-function scheduledRow(card: Card, key: string, pct: number | null): TimelineRow | null {
+function cardRow(card: Card, key: string, pct: number | null, todayDay: number): TimelineRow | null {
   const whole = span(card.schedule);
   if (!whole) return null;
+  const paused = pausedNow(card.assignees, todayDay);
   if (card.assignees.length < 2) {
     const only = card.assignees[0];
     const userId = only?.start_date ? only.user_id : null;
-    return { key, card, start: whole.start, end: whole.end, pct, segments: [{ key: 'card', userId, lane: 0, ...whole }], split: false, lanes: 1 };
+    const workingDays = only?.schedule?.working_days ?? whole.workingDays;
+    const segment: Segment = { key: 'card', userId, lane: 0, ...whole, workingDays, pauses: commonPauses(card.assignees, todayDay) };
+    return { key, card, start: whole.start, end: whole.end, pct, segments: [segment], split: false, lanes: 1, paused };
   }
   const segments: Segment[] = [];
   for (const a of card.assignees) {
     const s = span(a.schedule);
-    if (s) segments.push({ key: `a${a.user_id}`, userId: a.user_id, lane: 0, ...s });
+    if (s) segments.push({ key: `a${a.user_id}`, userId: a.user_id, lane: 0, ...s, pauses: pauseIntervals(a.pauses, todayDay) });
   }
   if (!segments.length) return null;
   const lanes = assignLanes(segments);
-  return { key, card, start: whole.start, end: whole.end, pct, segments, split: true, lanes };
+  return { key, card, start: whole.start, end: whole.end, pct, segments, split: true, lanes, paused };
 }
 
 /** Ligne d'une personne (regroupement par assigné) pour une carte à plusieurs assignés : sa seule part. */
-function personRow(card: Card, userId: number, key: string): TimelineRow | null {
+function personPart(card: Card, userId: number, key: string, todayDay: number): TimelineRow | null {
   const a = card.assignees.find((x) => x.user_id === userId);
   const s = a ? span(a.schedule) : null;
   if (!a || !s) return null;
-  return { key, card, start: s.start, end: s.end, pct: a.pct, segments: [{ key: `a${userId}`, userId, lane: 0, ...s }], split: false, lanes: 1 };
+  const segment: Segment = { key: `a${userId}`, userId, lane: 0, ...s, pauses: pauseIntervals(a.pauses, todayDay) };
+  return { key, card, start: s.start, end: s.end, pct: a.pct, segments: [segment], split: false, lanes: 1, paused: pausedNow([a], todayDay) };
 }
 
 /** Rangées des parts (premier arrivé, première rangée libre) ; renvoie leur nombre. */
@@ -371,8 +416,11 @@ export function buildGroups(
   members: Member[],
   projects: Project[],
   types: CardType[],
-  groupBy: GroupBy
+  groupBy: GroupBy,
+  todayDay: number = today()
 ): TimelineGroup[] {
+  const scheduledRow = (card: Card, key: string, pct: number | null) => cardRow(card, key, pct, todayDay);
+  const personRow = (card: Card, userId: number, key: string) => personPart(card, userId, key, todayDay);
   if (groupBy === 'none') {
     const rows = cards.map((c) => scheduledRow(c, `c${c.id}`, null)).filter((r): r is TimelineRow => r != null);
     return rows.length ? [makeGroup('all', 'Toutes les cartes', rows)] : [];
@@ -514,10 +562,29 @@ export function subWorkingDays(start: number, n: number): number {
   return d;
 }
 
-/** Nouvelle planification si l'on décale le début de `delta` jours calendaires (début ramené au jour ouvré suivant). */
-export function shiftSchedule(start: number, workingDays: number, delta: number): { start: number; end: number } {
-  const s = nextWorkingDay(start + delta);
-  return { start: s, end: addWorkingDays(s, Math.max(workingDays, 1) - 1) };
+/**
+ * Nouvelle planification si l'on décale le début de `delta` jours calendaires (début ramené au jour ouvré suivant) :
+ * même nombre de jours travaillés, les pauses (fixes dans le calendrier) repoussant la fin.
+ */
+export function shiftSchedule(start: number, workingDays: number, delta: number, pauses: readonly PauseSpan[] = []): { start: number; end: number } {
+  const { start: s, end } = planDays(start + delta, Math.max(workingDays, 1), pauses);
+  return { start: s, end };
+}
+
+// ---------- Pauses (infobulle) ----------
+
+/**
+ * Pauses d'un assigné qui touchent `[start, end]` (sa planification), plus la pause en cours :
+ * les anciennes, sans effet sur la planification, n'encombrent pas l'infobulle.
+ */
+export function relevantPauses(a: Assignee, start: number | null, end: number | null): Pause[] {
+  return a.pauses.filter((p) => {
+    if (p.end_date == null) return true;
+    const ps = toDay(p.start_date);
+    const pe = toDay(p.end_date);
+    if (ps == null || pe == null) return false;
+    return start == null || end == null || (ps <= end && pe - 1 >= start);
+  });
 }
 
 // ---------- Formats ----------

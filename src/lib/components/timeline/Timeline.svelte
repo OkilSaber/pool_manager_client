@@ -85,7 +85,7 @@
     )
   );
   const gridWidth = $derived(range.days * dayWidth);
-  const groups = $derived(buildGroups(board.visibleCards, board.states, board.members, board.projects, board.types, groupBy));
+  const groups = $derived(buildGroups(board.visibleCards, board.states, board.members, board.projects, board.types, groupBy, todayDay));
   const unplanned = $derived(unplannedRows(board.visibleCards, board.states));
   const plannedCount = $derived(board.visibleCards.length - unplanned.length);
   /** Tableau ouvert (« pool:3 », « project:12 ») : clé des groupes repliés et de la mise en place initiale. */

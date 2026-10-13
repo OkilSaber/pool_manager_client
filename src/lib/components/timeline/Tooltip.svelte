@@ -7,11 +7,11 @@
   import Avatar from '$lib/components/Avatar.svelte';
   import CardTypeIcon from '$lib/components/CardTypeIcon.svelte';
   import PriorityBadge from '$lib/components/PriorityBadge.svelte';
-  import { toDay } from '$lib/dates';
+  import { formatPause, toDay } from '$lib/dates';
   import { board } from '$lib/stores/board.svelte';
   import type { Card } from '$lib/types/Card';
   import { fmtEstimate, fmtPct, fmtWorkingDays, NNBSP } from '$lib/format';
-  import { formatRange } from './timeline';
+  import { formatRange, relevantPauses } from './timeline';
 
   let {
     card,
@@ -47,6 +47,31 @@
   const pStart = $derived(toDay(person?.schedule?.start));
   const pEnd = $derived(toDay(person?.schedule?.end));
   const round2 = (n: number) => Math.round(n * 100) / 100;
+
+  /** Au-delà, « et n autres » : l'infobulle reste un aperçu. */
+  const MAX_PAUSES = 3;
+
+  /**
+   * Pauses à montrer : celles de la personne survolée, sinon celles de chaque assigné (nom en tête s'ils sont
+   * plusieurs), limitées à celles qui touchent sa planification (plus la pause en cours) ; total en jours ouvrés.
+   */
+  const pauseGroups = $derived.by(() => {
+    if (!card) return [];
+    const list = person ? [person] : card.assignees;
+    return list.flatMap((a) => {
+      const pauses = relevantPauses(a, toDay(a.schedule?.start), toDay(a.schedule?.end));
+      if (!pauses.length) return [];
+      return [
+        {
+          userId: a.user_id,
+          name: !person && card.assignees.length > 1 ? (board.member(a.user_id)?.display_name ?? 'Ancien membre') : null,
+          lines: pauses.slice(-MAX_PAUSES).map(formatPause),
+          more: Math.max(0, pauses.length - MAX_PAUSES),
+          days: a.schedule?.paused_days ?? 0
+        }
+      ];
+    });
+  });
 </script>
 
 <div
@@ -80,6 +105,29 @@
         <span class="state"><span class="dot" style:background={cardState.color}></span>{cardState.name}</span>
       {/if}
     </div>
+    {#snippet pauses()}
+      {#if pauseGroups.length}
+        <div class="pauses">
+          {#each pauseGroups as g (g.userId)}
+            <div class="pause-group">
+              {#if g.name}<span class="pause-who">{g.name}</span>{/if}
+              {#if g.more}<span class="sub">et {g.more} pause{g.more > 1 ? 's' : ''} plus ancienne{g.more > 1 ? 's' : ''}</span>{/if}
+              {#each g.lines as line, i (i)}
+                <span class="pause-line">
+                  <svg width="10" height="10" viewBox="0 0 16 16" aria-hidden="true">
+                    <path d="M5.5 3.5v9M10.5 3.5v9" stroke="currentColor" stroke-width="2" stroke-linecap="round" />
+                  </svg>
+                  {line}
+                </span>
+              {/each}
+              {#if g.days > 0}
+                <span class="sub num">{g.days}{NNBSP}j ouvré{g.days > 1 ? 's' : ''} de pause au total</span>
+              {/if}
+            </div>
+          {/each}
+        </div>
+      {/if}
+    {/snippet}
     {#if person}
       <div class="person">
         <div class="who">
@@ -99,6 +147,7 @@
             </span>
           </div>
         {/if}
+        {@render pauses()}
       </div>
       {#if start != null && end != null && card.schedule}
         <div class="sub num card-span">
@@ -114,6 +163,7 @@
           </span>
         </div>
       {/if}
+      {@render pauses()}
       {#if card.assignees.length}
         <ul class="people">
           {#each card.assignees as a (a.user_id)}
@@ -267,6 +317,34 @@
     align-items: center;
     gap: 8px;
     font-weight: 500;
+  }
+
+  /* Pauses : ambre discret (priorité P2) mélangé au texte, lisible en clair comme en sombre. */
+  .pauses {
+    display: flex;
+    flex-direction: column;
+    gap: 6px;
+  }
+
+  .pause-group {
+    display: flex;
+    flex-direction: column;
+    gap: 2px;
+  }
+
+  .pause-who {
+    font-weight: 500;
+  }
+
+  .pause-line {
+    display: flex;
+    align-items: center;
+    gap: 6px;
+    color: color-mix(in srgb, var(--p2) 70%, var(--text));
+  }
+
+  .pause-line svg {
+    flex: none;
   }
 
   .card-span {

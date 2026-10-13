@@ -42,3 +42,32 @@ export function parseEstimate(raw: string): number | null | undefined {
   if (!Number.isFinite(n) || n < 0) return undefined;
   return Math.round(n * 100) / 100;
 }
+
+const fmtFull = new Intl.DateTimeFormat('fr-FR', { dateStyle: 'full', timeStyle: 'short' });
+const fmtDayMonth = new Intl.DateTimeFormat('fr-FR', { day: 'numeric', month: 'short' });
+const fmtDayMonthYear = new Intl.DateTimeFormat('fr-FR', { day: 'numeric', month: 'short', year: 'numeric' });
+
+/** Horodatage serveur (ISO, UTC) → « lundi 12 octobre 2026 à 14:05 » dans le fuseau local. */
+export function fmtDateTime(iso: string): string {
+  const d = new Date(iso);
+  return Number.isNaN(d.getTime()) ? '' : fmtFull.format(d);
+}
+
+/**
+ * Horodatage serveur → date relative : « à l'instant », « il y a 5 min », « il y a 3 h » (même jour),
+ * « hier », puis « 12 oct. » (« 12 oct. 2025 » une autre année). `now` : horloge de référence (ms).
+ */
+export function fmtRelative(iso: string, now: number = Date.now()): string {
+  const d = new Date(iso);
+  const t = d.getTime();
+  if (Number.isNaN(t)) return '';
+  const minutes = Math.floor((now - t) / 60_000);
+  if (minutes < 1) return 'à l’instant'; // horloge locale un peu en retard sur le serveur : pas de « dans 1 min »
+  if (minutes < 60) return `il y a ${minutes}${NNBSP}min`;
+  const ref = new Date(now);
+  const sameDay = (a: Date, b: Date) => a.getFullYear() === b.getFullYear() && a.getMonth() === b.getMonth() && a.getDate() === b.getDate();
+  if (sameDay(d, ref)) return `il y a ${Math.floor(minutes / 60)}${NNBSP}h`;
+  const yesterday = new Date(ref.getFullYear(), ref.getMonth(), ref.getDate() - 1);
+  if (sameDay(d, yesterday)) return 'hier';
+  return d.getFullYear() === ref.getFullYear() ? fmtDayMonth.format(d) : fmtDayMonthYear.format(d);
+}

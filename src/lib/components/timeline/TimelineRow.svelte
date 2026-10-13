@@ -30,7 +30,7 @@
   } = $props();
 </script>
 
-<RowLabel card={row.card} pct={row.pct} {indent} onopen={() => onopen(row.card.id)} />
+<RowLabel card={row.card} pct={row.pct} paused={row.paused} {indent} onopen={() => onopen(row.card.id)} />
 <div class="track">
   {#each row.segments as segment (segment.key)}
     <TimelineBar

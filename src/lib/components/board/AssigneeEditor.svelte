@@ -4,6 +4,10 @@
   Enregistre automatiquement dès que la liste est vide ou valide (total à 100 % à 0,01 près, occupations 1–100),
   avec anti-rebond pendant la frappe ; une répartition invalide n'est jamais envoyée.
   Les parts partent en pleine précision (ex. 200/7) : arrondies, le ceil() côté serveur pourrait ajouter un jour.
+
+  Pauses : chaque assigné enregistré peut être mis en pause / repris (aujourd'hui) ; le dépliant « Pauses (n) »
+  corrige les dates (début, reprise ; reprise vide = en cours) ou supprime une pause. Chaque action part au serveur
+  et la carte renvoyée remplace celle du store (pas d'optimisme) ; un refus du serveur s'affiche en toast.
 -->
 <script lang="ts">
   import { untrack } from 'svelte';
@@ -14,6 +18,9 @@
     computeSchedule,
     DEFAULT_OCCUPANCY,
     formatLong,
+    formatPause,
+    formatShort,
+    openPause,
     toDay
   } from '$lib/dates';
   import { board } from '$lib/stores/board.svelte';
@@ -22,7 +29,10 @@
   import type { Assignee } from '$lib/types/Assignee';
   import type { AssigneeInput } from '$lib/types/AssigneeInput';
   import type { Card } from '$lib/types/Card';
+  import type { Pause } from '$lib/types/Pause';
   import type { Schedule } from '$lib/types/Schedule';
+  import type { UpdatePause } from '$lib/types/UpdatePause';
+  import Spinner from '$lib/components/Spinner.svelte';
   import { fmtEstimate, fmtNum, fmtPct, fmtWorkingDays, NNBSP } from '$lib/format';
   import { formatDay, formatDayRange } from '$lib/components/timeline/timeline';
   import Popover from './Popover.svelte';
@@ -160,9 +170,15 @@
 
   // ---------- Planification par assigné (aperçu en direct, même avant enregistrement) ----------
 
+  /** Assigné tel qu'enregistré sur la carte (pauses comprises) ; absent tant qu'une nouvelle ligne n'est pas enregistrée. */
+  function saved(userId: number): Assignee | undefined {
+    return card.assignees.find((a) => a.user_id === userId);
+  }
+
   function rowSchedule(r: Row): Schedule | null {
     if (!shareOk(r.pct) || !occupancyOk(r.occupancy)) return null;
-    return assigneeSchedule(card.start_date, r.start_date, card.estimate_days, Math.min(r.pct, 100), r.occupancy);
+    const pauses = saved(r.user_id)?.pauses ?? [];
+    return assigneeSchedule(card.start_date, r.start_date, card.estimate_days, Math.min(r.pct, 100), r.occupancy, pauses);
   }
 
   function rowHint(r: Row): string {
@@ -369,6 +385,94 @@
     if (rows[i]) rows[i].entry = null;
     flush();
   }
+
+  // ---------- Pauses ----------
+
+  /** Assigné dont une pause / reprise est en cours d'envoi. */
+  let pausing = $state<number | null>(null);
+  /** Assignés dont l'historique des pauses est déplié. */
+  let expanded = $state<number[]>([]);
+  let confirmPause = $state<number | null>(null);
+  let confirmPauseTimer: ReturnType<typeof setTimeout> | undefined;
+
+  function toggleHistory(userId: number) {
+    expanded = expanded.includes(userId) ? expanded.filter((id) => id !== userId) : [...expanded, userId];
+  }
+
+  async function togglePause(userId: number) {
+    // Répartition en attente d'abord : le serveur doit connaître la personne (la file de la carte garde l'ordre).
+    flush();
+    const a = saved(userId);
+    if (!a || pausing != null) return;
+    pausing = userId;
+    const ok = openPause(a) ? await board.resumeAssignee(card.id, userId) : await board.pauseAssignee(card.id, userId);
+    pausing = null;
+    if (ok) onsaved?.();
+  }
+
+  /** Corrections de dates en attente (une saisie au clavier change la date à chaque segment tapé). */
+  const pauseTimers = new Map<string, ReturnType<typeof setTimeout>>();
+
+  function pauseValue(p: Pause, field: 'start' | 'end'): string {
+    return field === 'start' ? p.start_date : (p.end_date ?? '');
+  }
+
+  function onpausechange(p: Pause, field: 'start' | 'end', e: Event & { currentTarget: HTMLInputElement }) {
+    const input = e.currentTarget;
+    const key = `${p.id}:${field}`;
+    clearTimeout(pauseTimers.get(key));
+    pauseTimers.set(
+      key,
+      setTimeout(() => commitPause(p, field, input), 500)
+    );
+  }
+
+  function onpauseblur(p: Pause, field: 'start' | 'end', e: Event & { currentTarget: HTMLInputElement }) {
+    const key = `${p.id}:${field}`;
+    if (!pauseTimers.has(key)) return;
+    clearTimeout(pauseTimers.get(key));
+    commitPause(p, field, e.currentTarget);
+  }
+
+  async function commitPause(p: Pause, field: 'start' | 'end', input: HTMLInputElement) {
+    pauseTimers.delete(`${p.id}:${field}`);
+    const v = input.value;
+    const reset = () => {
+      if (input.isConnected) input.value = pauseValue(p, field);
+    };
+    let patch: UpdatePause;
+    if (field === 'start') {
+      // Début obligatoire : vide ou invraisemblable, on réaffiche la date enregistrée.
+      if (!v || !plausible(v)) return reset();
+      if (v === p.start_date) return;
+      patch = { start_date: v };
+    } else {
+      if (v && !plausible(v)) return reset();
+      const next = v || null; // vide : pause rouverte (en cours)
+      if (next === p.end_date) return;
+      patch = { end_date: next };
+    }
+    const ok = await board.updatePause(card.id, p.id, patch);
+    if (ok) onsaved?.();
+    else reset();
+  }
+
+  async function removePause(p: Pause) {
+    if (confirmPause !== p.id) {
+      confirmPause = p.id;
+      clearTimeout(confirmPauseTimer);
+      confirmPauseTimer = setTimeout(() => (confirmPause = null), 3000);
+      return;
+    }
+    clearTimeout(confirmPauseTimer);
+    confirmPause = null;
+    if (await board.deletePause(card.id, p.id)) onsaved?.();
+  }
+
+  $effect(() => () => {
+    clearTimeout(confirmPauseTimer);
+    for (const t of pauseTimers.values()) clearTimeout(t);
+  });
 </script>
 
 <section class="assignees" aria-labelledby="{uid}-title">
@@ -413,6 +517,9 @@
         {@const okOcc = occupancyOk(row.occupancy)}
         {@const sched = schedules[i]}
         {@const end = sched ? toDay(sched.end) : null}
+        {@const serverRow = saved(row.user_id)}
+        {@const pauses = serverRow?.pauses ?? []}
+        {@const current = serverRow ? openPause(serverRow) : null}
         <li class="row">
           <div class="line1">
             <Avatar id={row.user_id} name={who} size={24} />
@@ -503,11 +610,111 @@
             <span class="result num" class:none={!sched}>
               {#if sched && end != null}
                 → {formatDay(end)} · {fmtWorkingDays(sched.working_days)}
+                {#if sched.paused_days > 0}
+                  <span class="paused-days">+{sched.paused_days}{NNBSP}j de pause</span>
+                {/if}
               {:else}
                 {rowHint(row)}
               {/if}
             </span>
+
+            {#if serverRow}
+              <button
+                class="btn btn-ghost btn-sm pause-btn"
+                type="button"
+                aria-busy={pausing === row.user_id}
+                aria-label={current ? `Reprendre la part de ${who}` : `Mettre la part de ${who} en pause`}
+                onclick={() => togglePause(row.user_id)}
+                {@attach tooltip(current ? 'Reprendre aujourd’hui' : 'Mettre en pause à partir d’aujourd’hui')}
+              >
+                {#if pausing === row.user_id}
+                  <Spinner size={10} />
+                {:else if current}
+                  <svg width="10" height="10" viewBox="0 0 16 16" aria-hidden="true">
+                    <path d="M5 3.5v9l7.5-4.5z" fill="currentColor" stroke="currentColor" stroke-width="1.2" stroke-linejoin="round" />
+                  </svg>
+                {:else}
+                  <svg width="10" height="10" viewBox="0 0 16 16" aria-hidden="true">
+                    <path d="M5.5 3.5v9M10.5 3.5v9" stroke="currentColor" stroke-width="2" stroke-linecap="round" />
+                  </svg>
+                {/if}
+                {current ? 'Reprendre' : 'Pause'}
+              </button>
+            {/if}
           </div>
+
+          {#if pauses.length}
+            {@const open = expanded.includes(row.user_id)}
+            <div class="line3">
+              {#if current}
+                {@const since = toDay(current.start_date)}
+                <span class="paused-badge">
+                  <svg width="10" height="10" viewBox="0 0 16 16" aria-hidden="true">
+                    <path d="M5.5 3.5v9M10.5 3.5v9" stroke="currentColor" stroke-width="2" stroke-linecap="round" />
+                  </svg>
+                  {since != null ? `En pause depuis le ${formatShort(since)}` : 'En pause'}
+                </span>
+              {/if}
+              <button
+                class="history-toggle"
+                type="button"
+                aria-expanded={open}
+                aria-controls="{uid}-pauses-{row.user_id}"
+                onclick={() => toggleHistory(row.user_id)}
+              >
+                <svg class="chev" class:open width="10" height="10" viewBox="0 0 12 12" aria-hidden="true">
+                  <path d="M4.5 3 7.5 6 4.5 9" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round" />
+                </svg>
+                Pauses ({pauses.length})
+              </button>
+            </div>
+            {#if open}
+              <ul class="pauses" id="{uid}-pauses-{row.user_id}" aria-label="Pauses de {who}">
+                {#each pauses as p (p.id)}
+                  <li class="pause">
+                    <span class="unit" aria-hidden="true">du</span>
+                    <input
+                      class="mini date num"
+                      type="date"
+                      value={p.start_date}
+                      aria-label="Premier jour de pause de {who} ({formatPause(p)})"
+                      onchange={(e) => onpausechange(p, 'start', e)}
+                      onblur={(e) => onpauseblur(p, 'start', e)}
+                    />
+                    <span class="unit" aria-hidden="true">reprise le</span>
+                    <input
+                      class="mini date num"
+                      class:inherited={p.end_date == null}
+                      type="date"
+                      value={p.end_date ?? ''}
+                      aria-label={p.end_date ? `Jour de reprise de ${who}` : `Jour de reprise de ${who} (vide : pause en cours)`}
+                      onchange={(e) => onpausechange(p, 'end', e)}
+                      onblur={(e) => onpauseblur(p, 'end', e)}
+                    />
+                    {#if p.end_date == null}<span class="hint">en cours</span>{/if}
+                    <button
+                      class="btn btn-sm pause-del"
+                      class:btn-ghost={confirmPause !== p.id}
+                      class:btn-danger={confirmPause === p.id}
+                      class:btn-icon={confirmPause !== p.id}
+                      type="button"
+                      aria-label={confirmPause === p.id ? `Confirmer la suppression de la pause (${formatPause(p)})` : `Supprimer la pause (${formatPause(p)})`}
+                      onclick={() => removePause(p)}
+                      {@attach tooltip(confirmPause === p.id ? null : 'Supprimer la pause')}
+                    >
+                      {#if confirmPause === p.id}
+                        Confirmer
+                      {:else}
+                        <svg width="12" height="12" viewBox="0 0 16 16" aria-hidden="true">
+                          <path d="M3 4.5h10M6.5 4.5V3h3v1.5M4.5 4.5l.6 8.5h5.8l.6-8.5" stroke="currentColor" stroke-width="1.3" fill="none" stroke-linejoin="round" />
+                        </svg>
+                      {/if}
+                    </button>
+                  </li>
+                {/each}
+              </ul>
+            {/if}
+          {/if}
         </li>
       {/each}
     </ul>
@@ -837,6 +1044,107 @@
     color: var(--text-subtle);
   }
 
+  /* ---------- Pauses ---------- */
+
+  /* Ambre discret (priorité P2) mélangé au texte : lisible en clair comme en sombre. */
+  .paused-days,
+  .paused-badge {
+    color: color-mix(in srgb, var(--p2) 70%, var(--text));
+  }
+
+  .paused-days {
+    margin-left: 4px;
+    font-weight: 400;
+  }
+
+  .pause-btn {
+    height: 22px;
+    margin-left: auto;
+    padding: 0 6px;
+    gap: 4px;
+    font-size: 12px;
+  }
+
+  .line3 {
+    display: flex;
+    flex-wrap: wrap;
+    align-items: center;
+    gap: 4px 10px;
+    padding-left: 34px;
+    font-size: 12px;
+  }
+
+  .paused-badge {
+    display: inline-flex;
+    align-items: center;
+    gap: 4px;
+    padding: 1px 7px 1px 6px;
+    border-radius: 999px;
+    background: color-mix(in srgb, var(--p2) 14%, transparent);
+    font-weight: 500;
+    white-space: nowrap;
+  }
+
+  .history-toggle {
+    display: inline-flex;
+    align-items: center;
+    gap: 4px;
+    height: 20px;
+    padding: 0 4px;
+    border: 0;
+    border-radius: 4px;
+    background: transparent;
+    color: var(--text-muted);
+    font: inherit;
+    cursor: pointer;
+  }
+
+  .history-toggle:focus-visible {
+    outline: none;
+    box-shadow: var(--focus);
+  }
+
+  @media (hover: hover) and (pointer: fine) {
+    .history-toggle:hover {
+      color: var(--text);
+    }
+  }
+
+  .chev {
+    transition: transform 150ms var(--ease-out);
+  }
+
+  .chev.open {
+    transform: rotate(90deg);
+  }
+
+  .pauses {
+    display: flex;
+    flex-direction: column;
+    gap: 4px;
+    margin: 0;
+    padding: 0 0 0 34px;
+    list-style: none;
+  }
+
+  .pause {
+    display: flex;
+    flex-wrap: wrap;
+    align-items: center;
+    gap: 4px 6px;
+    font-size: 12px;
+    color: var(--text-muted);
+  }
+
+  .pause-del {
+    height: 22px;
+    font-size: 12px;
+  }
+
+  .pause-del.btn-icon {
+    width: 22px;
+  }
+
   /*
    * La couleur d'état est portée par l'icône ; le texte reste lisible (orange ou vert purs ≈ 3:1 sur blanc).
    * Total valide : ton calme ; invalide : orange mélangé à --text (assombri en clair, éclairci en sombre).
@@ -917,6 +1225,9 @@
   @media (prefers-reduced-motion: reduce) {
     .seg button:active {
       transform: none;
+    }
+    .chev {
+      transition: none;
     }
   }
 </style>

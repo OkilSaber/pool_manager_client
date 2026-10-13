@@ -24,6 +24,7 @@ import type { ScopeKind } from '$lib/types/ScopeKind';
 import type { State } from '$lib/types/State';
 import type { UpdateCard } from '$lib/types/UpdateCard';
 import type { UpdateCardType } from '$lib/types/UpdateCardType';
+import type { UpdatePause } from '$lib/types/UpdatePause';
 import type { UpdateProject } from '$lib/types/UpdateProject';
 import type { UpdateState } from '$lib/types/UpdateState';
 import { poolsCache } from './pools-cache';
@@ -54,14 +55,19 @@ function renormalize(rest: Assignee[]): Assignee[] {
   return shares.sort(byShare);
 }
 
-/** Assignés tels que le serveur les enregistre (sans date propre vide, occupation par défaut), planifications à recalculer. */
-function fromInput(list: AssigneeInput[]): Assignee[] {
+/**
+ * Assignés tels que le serveur les enregistre (sans date propre vide, occupation par défaut), planifications à recalculer.
+ * Comme le serveur, les personnes gardées conservent leurs pauses (`before` : assignés actuels de la carte).
+ */
+function fromInput(list: AssigneeInput[], before: Assignee[] = []): Assignee[] {
+  const pauses = new Map(before.map((a) => [a.user_id, a.pauses]));
   return list
     .map((a) => ({
       user_id: a.user_id,
       pct: a.pct,
       occupancy: a.occupancy ?? DEFAULT_OCCUPANCY,
       start_date: a.start_date?.trim() || null,
+      pauses: pauses.get(a.user_id) ?? [],
       schedule: null
     }))
     .sort(byShare);
@@ -358,7 +364,7 @@ class BoardStore {
     const before = this.card(id);
     if (!before) return false;
     const snapshot = $state.snapshot(before) as Card;
-    this.replaceCard(withSchedules({ ...snapshot, assignees: fromInput(list) }));
+    this.replaceCard(withSchedules({ ...snapshot, assignees: fromInput(list, snapshot.assignees) }));
     const { seq, done } = this.enqueue(id, () => api.setAssignees(id, list));
     try {
       const saved = await done;
@@ -377,6 +383,53 @@ class BoardStore {
       toast.error(e);
       return false;
     }
+  }
+
+  /**
+   * Action sur les pauses d'un assigné (pause, reprise, correction, suppression) : pas d'optimisme, la carte
+   * renvoyée par le serveur (planifications recalculées) remplace celle du store. En file avec les autres
+   * modifications de la carte ; si une plus récente est partie entre-temps, c'est sa réponse qui fera foi.
+   */
+  private async pauseAction(id: number, send: () => Promise<Card>): Promise<boolean> {
+    if (!this.card(id)) return false;
+    const { seq, done } = this.enqueue(id, send);
+    try {
+      const saved = await done;
+      if (this.isLatest(id, seq)) {
+        this.cardStale.delete(id);
+        this.replaceCard(saved);
+      }
+      return true;
+    } catch (e) {
+      if (this.isLatest(id, seq) && this.cardStale.delete(id)) void this.resync(id);
+      toast.error(e);
+      return false;
+    }
+  }
+
+  /** Met la part d'un assigné en pause (à partir d'aujourd'hui par défaut). */
+  pauseAssignee(cardId: number, userId: number, date?: string): Promise<boolean> {
+    return this.pauseAction(cardId, () => api.pauseAssignee(cardId, userId, date));
+  }
+
+  /** Reprend la part d'un assigné en pause (`date` : jour de reprise, aujourd'hui par défaut). */
+  resumeAssignee(cardId: number, userId: number, date?: string): Promise<boolean> {
+    return this.pauseAction(cardId, () => api.resumeAssignee(cardId, userId, date));
+  }
+
+  /** Corrige une pause (`end_date: null` la rouvre). */
+  updatePause(cardId: number, pauseId: number, patch: UpdatePause): Promise<boolean> {
+    return this.pauseAction(cardId, () => api.updatePause(pauseId, patch));
+  }
+
+  deletePause(cardId: number, pauseId: number): Promise<boolean> {
+    return this.pauseAction(cardId, () => api.deletePause(pauseId));
+  }
+
+  /** Nombre de commentaires d'une carte, tenu à jour par la fiche (ajout, suppression, liste rechargée). */
+  setCommentCount(id: number, count: number) {
+    const c = this.detail?.cards.find((x) => x.id === id);
+    if (c && c.comment_count !== count) c.comment_count = count;
   }
 
   async deleteCard(id: number): Promise<boolean> {

@@ -5,6 +5,7 @@
   (confirmation en place : le premier clic arme « Confirmer » 3 s). Propriétaire du projet ou du pool :
   peut aussi supprimer ceux des autres. Corps en texte brut, retours à la ligne conservés.
   Échap dans une zone modifiée annule / quitte le champ sans fermer la modale.
+  Temps réel : commentaires modifiés par un autre membre → liste rechargée, brouillon et édition en cours gardés.
 -->
 <script module lang="ts">
   /** Brouillons par carte : fermer la fiche ou passer à une autre carte ne perd pas un commentaire en cours. */
@@ -18,6 +19,7 @@
   import Spinner from '$lib/components/Spinner.svelte';
   import BusyLabel from '$lib/components/shell/BusyLabel.svelte';
   import { board } from '$lib/stores/board.svelte';
+  import { realtime } from '$lib/stores/realtime.svelte';
   import { session } from '$lib/stores/session.svelte';
   import { toast } from '$lib/stores/toast.svelte';
   import type { Card } from '$lib/types/Card';
@@ -105,6 +107,49 @@
     }
   }
 
+  // ---------- Temps réel : modifications des autres membres ----------
+
+  /** Écritures d'ici (envoi, modification, suppression ; au départ et à l'arrivée) : une relecture croisée est refaite. */
+  let writes = 0;
+  let seen = { id: -1, tick: 0 };
+
+  $effect(() => {
+    const id = card.id;
+    const tick = realtime.commentChanges(id);
+    if (id !== seen.id) {
+      seen = { id, tick }; // autre carte : chargée par l'effet ci-dessus
+      return;
+    }
+    if (tick === seen.tick) return;
+    seen.tick = tick;
+    untrack(() => void reload(id));
+  });
+
+  /** Relit la liste sans spinner ; les nouveaux commentaires apparaissent en fondu. */
+  async function reload(id: number) {
+    const token = ++loadToken;
+    const before = writes;
+    try {
+      const list = await api.listComments(id);
+      if (token !== loadToken || id !== card.id) return;
+      if (before !== writes) return void reload(id);
+      const known = new Set(comments.map((c) => c.id));
+      const added = list.filter((c) => !known.has(c.id)).map((c) => c.id);
+      if (loaded && added.length) fresh = new Set([...fresh, ...added]);
+      comments = list;
+      loaded = true;
+      loading = false;
+      if (confirmId != null && !list.some((c) => c.id === confirmId)) confirmId = null;
+      if (editingId != null && !list.some((c) => c.id === editingId)) {
+        cancelEdit();
+        toast.info('Commentaire supprimé par un autre membre');
+      }
+      board.setCommentCount(id, list.length);
+    } catch {
+      /* hors ligne : la reconnexion ou la prochaine ouverture rechargera */
+    }
+  }
+
   // ---------- Envoi ----------
 
   const canSend = $derived(draft.trim().length > 0 && !sending);
@@ -114,11 +159,13 @@
     const id = card.id;
     if (!body || sending) return;
     sending = true;
+    writes++;
     try {
       const created = await api.createComment(id, body);
       if (id !== card.id) return; // fiche passée à une autre carte entre-temps
       fresh = new Set([...fresh, created.id]);
-      comments = [...comments, created];
+      // Déjà là si la liste a été relue (temps réel) entre-temps.
+      if (!comments.some((x) => x.id === created.id)) comments = [...comments, created];
       board.setCommentCount(id, comments.length);
       // Texte tapé pendant l'envoi : on le garde (seul ce qui a été envoyé disparaît).
       draft = draft.trim() === body ? '' : draft;
@@ -127,6 +174,7 @@
       toast.error(e);
     } finally {
       sending = false;
+      writes++;
     }
   }
 
@@ -166,6 +214,7 @@
     }
     if (body === c.body) return cancelEdit();
     saving = true;
+    writes++;
     try {
       const updated = await api.updateComment(c.id, body);
       comments = comments.map((x) => (x.id === updated.id ? updated : x));
@@ -174,6 +223,7 @@
       toast.error(e);
     } finally {
       saving = false;
+      writes++;
     }
   }
 
@@ -214,6 +264,7 @@
     confirmId = null;
     removing = c.id;
     const id = card.id;
+    writes++;
     try {
       await api.deleteComment(c.id);
       comments = comments.filter((x) => x.id !== c.id);
@@ -222,6 +273,7 @@
       toast.error(e);
     } finally {
       removing = null;
+      writes++;
     }
   }
 </script>

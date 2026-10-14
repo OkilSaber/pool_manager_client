@@ -57,9 +57,15 @@
   });
   const card = $derived(live ?? (last && last.id === cardId ? last : undefined));
 
-  // Carte disparue (supprimée ailleurs, tableau rechargé) : on ferme.
+  // Carte disparue (supprimée par un autre membre, tableau rechargé) : on ferme. Nos propres suppressions
+  // ferment la fiche avant de retirer la carte ; une carte qu'on a envoyée dans un autre projet (vue projet)
+  // quitte le tableau au rechargement suivant, sans message.
   $effect(() => {
-    if (open && cardId != null && board.detail && !live) open = false;
+    if (open && cardId != null && board.detail && !live) {
+      open = false;
+      const movedAway = board.kind === 'project' && last?.id === cardId && last.project_id !== board.project?.id;
+      if (!movedAway) toast.info('Carte supprimée par un autre membre');
+    }
   });
 
   // ---------- Brouillons des champs texte ----------
@@ -71,6 +77,20 @@
   let title = $state('');
   let description = $state('');
   let estimate = $state('');
+  /**
+   * Valeur d'un champ texte quand il a pris le focus. Pendant la saisie, le champ ne suit plus la carte
+   * (un autre membre peut la modifier) ; à la sortie, il n'est enregistré que s'il a été modifié ici :
+   * un simple passage dans le champ ne ramène pas l'ancienne valeur par-dessus celle de l'autre membre.
+   */
+  const base: Record<Field, string> = { title: '', description: '', estimate: '' };
+
+  function onfocus(field: Field) {
+    focused = field;
+    base[field] = field === 'title' ? title : field === 'description' ? description : estimate;
+  }
+
+  /** Champ ayant le focus, laissé tel quel : rien à enregistrer. */
+  const untouched = (field: Field, value: string) => focused === field && base[field] === value;
 
   // Brouillon de création : propriétés sans champ texte.
   let draftPriority = $state(DEFAULT_PRIORITY);
@@ -228,6 +248,7 @@
 
   function saveTitle() {
     if (!card) return;
+    if (untouched('title', title)) return;
     const v = cleanTitle(title);
     if (!v) {
       title = card.title; // titre obligatoire : on revient à la valeur enregistrée
@@ -237,11 +258,11 @@
   }
 
   function saveDescription() {
-    if (card && description !== card.description) patch({ description });
+    if (card && !untouched('description', description) && description !== card.description) patch({ description });
   }
 
   function saveEstimate() {
-    if (!card) return;
+    if (!card || untouched('estimate', estimate)) return;
     const v = parseEstimate(estimate);
     if (v === undefined) {
       estimate = estimateText(card);
@@ -319,10 +340,8 @@
 
   function revertOnEscape(e: KeyboardEvent, field: Field) {
     if (e.key !== 'Escape' || !card) return;
-    const changed =
-      (field === 'title' && title !== card.title) ||
-      (field === 'description' && description !== card.description) ||
-      (field === 'estimate' && estimate !== estimateText(card));
+    const value = field === 'title' ? title : field === 'description' ? description : estimate;
+    const changed = !untouched(field, value);
     if (!changed) return; // rien à annuler : Échap ferme la modale
     e.preventDefault();
     e.stopPropagation();
@@ -467,7 +486,7 @@
           placeholder={creating ? 'Titre de la carte' : undefined}
           autofocus={creating}
           bind:value={title}
-          onfocus={() => (focused = 'title')}
+          onfocus={() => onfocus('title')}
           onblur={() => onblur('title')}
           onkeydown={ontitlekey}
           {@attach autosize(title, 200)}
@@ -481,7 +500,7 @@
             class="textarea desc"
             placeholder="Ajoutez du contexte, des liens, des critères d’acceptation…"
             bind:value={description}
-            onfocus={() => (focused = 'description')}
+            onfocus={() => onfocus('description')}
             onblur={() => onblur('description')}
             onkeydown={(e) => revertOnEscape(e, 'description')}
             {@attach autosize(description, 360)}
@@ -591,7 +610,7 @@
               aria-describedby="{uid}-estimate-unit"
               value={estimate}
               oninput={(e) => (estimate = e.currentTarget.value)}
-              onfocus={() => (focused = 'estimate')}
+              onfocus={() => onfocus('estimate')}
               onblur={() => onblur('estimate')}
               onkeydown={onestimatekey}
             />

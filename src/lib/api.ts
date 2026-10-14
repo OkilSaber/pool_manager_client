@@ -63,7 +63,20 @@ export function setUnauthorizedHandler(fn: (token: string) => void) {
   onUnauthorized = fn;
 }
 
-const isTauri = typeof window !== 'undefined' && '__TAURI_INTERNALS__' in window;
+export const isTauri = typeof window !== 'undefined' && '__TAURI_INTERNALS__' in window;
+
+/** Identifiant aléatoire de cette instance de l'app (gardé jusqu'au prochain lancement). */
+function randomId(): string {
+  // `randomUUID` n'existe qu'en contexte sécurisé : pas dans un navigateur sur `http://192.168.…`.
+  if (typeof crypto.randomUUID === 'function') return crypto.randomUUID();
+  return Array.from(crypto.getRandomValues(new Uint8Array(16)), (b) => b.toString(16).padStart(2, '0')).join('');
+}
+
+/**
+ * Origine de nos écritures : envoyée en `X-Client-Id` sur chaque requête et à l'authentification de la
+ * WebSocket temps réel, pour que le serveur ne nous renvoie pas l'écho de nos propres modifications.
+ */
+export const CLIENT_ID = randomId();
 
 /**
  * Délai maximal d'une requête. Sans lui, une IP absente du réseau local fait attendre jusqu'au délai
@@ -90,7 +103,7 @@ export async function doFetch(url: string, init: RequestInit, timeoutMs = REQUES
 }
 
 async function request<T>(method: string, path: string, body?: unknown, timeoutMs = REQUEST_TIMEOUT_MS): Promise<T> {
-  const headers: Record<string, string> = { Accept: 'application/json' };
+  const headers: Record<string, string> = { Accept: 'application/json', 'X-Client-Id': CLIENT_ID };
   const token = getToken();
   if (token) headers.Authorization = `Bearer ${token}`;
   if (body !== undefined) headers['Content-Type'] = 'application/json';

@@ -94,6 +94,9 @@ Les assignés d'une carte sont choisis parmi les membres du pool.
 
 ### Finitions
 
+- **Temps réel** : les modifications des autres membres (cartes, colonnes, types, commentaires…) apparaissent
+  aussitôt sur le tableau et dans la fiche ouverte, sans écraser un champ en cours de saisie ; reconnexion
+  automatique, « Hors ligne » signalé discrètement si la coupure dure.
 - Thème clair et sombre automatiques (suivent le système).
 - Animations courtes et nettes, aucune animation sur les actions clavier, respect de « Réduire les animations ».
 - Navigable au clavier, interface entièrement en français.
@@ -109,7 +112,7 @@ L'app macOS est signée ad hoc mais pas notariée par Apple : au premier lanceme
 **Réglages Système → Confidentialité et sécurité → Ouvrir quand même**, ou dans un terminal :
 `xattr -dr com.apple.quarantine "/Applications/Pool Manager.app"`.
 
-La version 0.2 du client nécessite le serveur **0.2** ou plus récent.
+La version 0.2 du client nécessite le serveur **0.2** ou plus récent. Le temps réel (client 0.6) nécessite le serveur **0.6**.
 
 Le client a besoin d'un [serveur Pool Manager](https://github.com/OkilSaber/pool_manager_server) joignable
 (sur votre machine ou le réseau local). Au premier lancement, renseignez son adresse dans

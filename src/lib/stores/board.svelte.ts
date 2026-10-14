@@ -5,6 +5,9 @@
 // l'utilisateur les a faites) et seule la réponse de la plus récente est appliquée. Une réponse en retard
 // ne ramène donc jamais la carte à un état intermédiaire (←/→ répétés sur la chronologie, glissers rapides),
 // et une carte supprimée n'est jamais réinsérée par une réponse tardive.
+//
+// Modifications des autres membres (temps réel) : `sync()` recharge le tableau sans spinner ni perte des filtres ;
+// une carte dont une modification locale est encore en file garde sa version locale (la réponse fera foi).
 
 import { untrack } from 'svelte';
 import { api, ApiError } from '$lib/api';
@@ -252,9 +255,89 @@ class BoardStore {
     }
   }
 
+  // ---------- Rechargement en arrière-plan (temps réel, retour au premier plan) ----------
+
+  /** Écritures locales (envoi et réponse) : un rechargement parti avant l'une d'elles est refait. */
+  private touched = 0;
+  private syncTimer: ReturnType<typeof setTimeout> | undefined;
+  private syncing = false;
+  private syncAgain = false;
+
+  private touch() {
+    this.touched++;
+  }
+
+  /** Écriture hors file des cartes (colonnes, types, projets, membres, création) : comptée au départ et à l'arrivée. */
+  private async write<T>(req: Promise<T>): Promise<T> {
+    this.touch();
+    try {
+      return await req;
+    } finally {
+      this.touch();
+    }
+  }
+
+  /**
+   * Recharge le tableau ouvert en arrière-plan : appels regroupés (150 ms), pas d'état de chargement,
+   * filtres gardés. Un échec réseau est silencieux (la reconnexion rechargera) ; un 403 / 404 affiche
+   * l'erreur du tableau (supprimé, ou plus accessible).
+   */
+  sync() {
+    if (!this.detail) return;
+    clearTimeout(this.syncTimer);
+    this.syncTimer = setTimeout(() => void this.runSync(), 150);
+  }
+
+  private async runSync() {
+    if (this.syncing) {
+      this.syncAgain = true;
+      return;
+    }
+    const ref = this.ref;
+    if (!ref || this.error) return;
+    const token = this.loadToken;
+    const touched = this.touched;
+    this.syncing = true;
+    try {
+      const detail = await this.fetch(ref);
+      if (token !== this.loadToken || !sameScope(this.ref, ref) || !this.detail) return;
+      // Une écriture locale s'est croisée avec la lecture : la réponse est peut-être d'avant elle.
+      if (touched !== this.touched) this.syncAgain = true;
+      else this.merge(detail);
+    } catch (e) {
+      if (token === this.loadToken && sameScope(this.ref, ref) && e instanceof ApiError && (e.status === 403 || e.status === 404)) {
+        this.error = e.message;
+        this.errorStatus = e.status;
+      }
+    } finally {
+      this.syncing = false;
+      if (this.syncAgain) {
+        this.syncAgain = false;
+        this.sync();
+      }
+    }
+  }
+
+  /** Remplace le tableau par celui du serveur, sauf les cartes dont une modification locale est en file. */
+  private merge(fresh: ScopeDetail) {
+    const local = new Map((this.detail?.cards ?? []).map((c) => [c.id, c]));
+    const cards: Card[] = [];
+    for (const c of fresh.cards) {
+      if (!this.cardQueue.has(c.id)) cards.push(c);
+      else {
+        // Absente localement alors qu'une requête est en file : suppression en cours, elle ne revient pas.
+        const mine = local.get(c.id);
+        if (mine) cards.push($state.snapshot(mine) as Card);
+      }
+    }
+    this.restoreFilter(fresh);
+    this.detail = { ...fresh, cards };
+  }
+
   /** Oublie le tableau ouvert (déconnexion, changement de serveur) ; les chargements en vol sont ignorés. */
   reset() {
     this.loadToken++;
+    clearTimeout(this.syncTimer);
     this.detail = null;
     this.loading = false;
     this.error = null;
@@ -275,10 +358,12 @@ class BoardStore {
   private enqueue<T>(id: number, send: () => Promise<T>): { seq: number; done: Promise<T> } {
     const seq = (this.cardSeq.get(id) ?? 0) + 1;
     this.cardSeq.set(id, seq);
+    this.touch();
     const done = (this.cardQueue.get(id) ?? Promise.resolve()).then(send);
     const tail = done.catch(() => {});
     this.cardQueue.set(id, tail);
     void tail.then(() => {
+      this.touch();
       if (this.cardQueue.get(id) === tail) this.cardQueue.delete(id);
     });
     return { seq, done };
@@ -310,7 +395,7 @@ class BoardStore {
     if (!this.detail) return null;
     const ref = this.ref;
     try {
-      const card = await api.createCard(projectId, input);
+      const card = await this.write(api.createCard(projectId, input));
       if (sameScope(this.ref, ref) && this.detail && !this.card(card.id)) this.detail.cards.push(card);
       return card;
     } catch (e) {
@@ -465,9 +550,10 @@ class BoardStore {
     try {
       const state =
         poolId != null
-          ? await api.createPoolState(poolId, { name, color })
-          : await api.createProjectState(projectId!, { name, color });
-      if (sameScope(this.ref, ref) && this.detail) this.detail.states.push(state);
+          ? await this.write(api.createPoolState(poolId, { name, color }))
+          : await this.write(api.createProjectState(projectId!, { name, color }));
+      // Déjà là si un rechargement (temps réel) est arrivé avant la réponse.
+      if (sameScope(this.ref, ref) && this.detail && !this.detail.states.some((s) => s.id === state.id)) this.detail.states.push(state);
       return state;
     } catch (e) {
       toast.error(e);
@@ -482,7 +568,7 @@ class BoardStore {
     const snapshot = $state.snapshot(this.detail.states[i]) as State;
     this.detail.states[i] = { ...snapshot, ...Object.fromEntries(Object.entries(patch).filter(([, v]) => v !== undefined)) };
     try {
-      const updated = await api.updateState(id, patch);
+      const updated = await this.write(api.updateState(id, patch));
       const j = this.detail?.states.findIndex((s) => s.id === id) ?? -1;
       if (this.detail && j >= 0) this.detail.states[j] = updated;
       return true;
@@ -497,7 +583,7 @@ class BoardStore {
   async deleteState(id: number): Promise<boolean> {
     if (!this.detail) return false;
     try {
-      await api.deleteState(id);
+      await this.write(api.deleteState(id));
       if (this.detail) this.detail.states = this.detail.states.filter((s) => s.id !== id);
       return true;
     } catch (e) {
@@ -516,7 +602,9 @@ class BoardStore {
     const projectId = this.project?.id;
     try {
       const type =
-        poolId != null ? await api.createPoolType(poolId, { name, icon }) : await api.createProjectType(projectId!, { name, icon });
+        poolId != null
+          ? await this.write(api.createPoolType(poolId, { name, icon }))
+          : await this.write(api.createProjectType(projectId!, { name, icon }));
       if (sameScope(this.ref, ref) && this.detail && !this.detail.types.some((t) => t.id === type.id)) this.detail.types.push(type);
       return type;
     } catch (e) {
@@ -532,7 +620,7 @@ class BoardStore {
     const snapshot = $state.snapshot(this.detail.types[i]) as CardType;
     this.detail.types[i] = { ...snapshot, ...Object.fromEntries(Object.entries(patch).filter(([, v]) => v !== undefined)) };
     try {
-      const updated = await api.updateType(id, patch);
+      const updated = await this.write(api.updateType(id, patch));
       const j = this.detail?.types.findIndex((t) => t.id === id) ?? -1;
       if (this.detail && j >= 0) this.detail.types[j] = updated;
       return true;
@@ -548,7 +636,7 @@ class BoardStore {
   async deleteType(id: number): Promise<boolean> {
     if (!this.detail) return false;
     try {
-      await api.deleteType(id);
+      await this.write(api.deleteType(id));
       if (!this.detail) return true;
       this.detail.types = this.detail.types.filter((t) => t.id !== id);
       for (const c of this.detail.cards) if (c.type_id === id) c.type_id = null;
@@ -568,7 +656,7 @@ class BoardStore {
     const pool = this.pool;
     if (!this.detail || !pool) return false;
     try {
-      const updated = await api.renamePool(pool.id, name);
+      const updated = await this.write(api.renamePool(pool.id, name));
       if (this.detail?.pool?.id === pool.id) this.detail.pool = updated;
       poolsCache.update((list) => list.map((p) => (p.id === pool.id ? { ...p, name: updated.name } : p)));
       return true;
@@ -580,8 +668,8 @@ class BoardStore {
 
   async createProject(input: CreateProject): Promise<Project | null> {
     try {
-      const project = await api.createProject(input);
-      if (this.detail && this.kind === 'pool' && project.pool_id === this.pool?.id) this.detail.projects.push(project);
+      const project = await this.write(api.createProject(input));
+      if (this.detail && this.kind === 'pool' && project.pool_id === this.pool?.id && !this.projectOf(project.id)) this.detail.projects.push(project);
       return project;
     } catch (e) {
       toast.error(e);
@@ -595,7 +683,7 @@ class BoardStore {
    */
   async updateProject(id: number, patch: UpdateProject): Promise<boolean> {
     try {
-      const updated = await api.updateProject(id, patch);
+      const updated = await this.write(api.updateProject(id, patch));
       if (!this.detail) return true;
       if (patch.pool_id !== undefined || patch.archived !== undefined) {
         await this.refresh().catch(() => {});
@@ -613,7 +701,7 @@ class BoardStore {
 
   async deleteProject(id: number): Promise<boolean> {
     try {
-      await api.deleteProject(id);
+      await this.write(api.deleteProject(id));
       if (this.detail && this.kind === 'pool') {
         this.detail.projects = this.detail.projects.filter((p) => p.id !== id);
         this.detail.cards = this.detail.cards.filter((c) => c.project_id !== id);
@@ -630,8 +718,8 @@ class BoardStore {
     const pool = this.pool;
     if (!this.detail || !pool) return false;
     try {
-      const member = await api.addMember(pool.id, email);
-      if (this.detail?.pool?.id === pool.id) this.detail.members.push(member);
+      const member = await this.write(api.addMember(pool.id, email));
+      if (this.detail?.pool?.id === pool.id && !this.member(member.user_id)) this.detail.members.push(member);
       return true;
     } catch (e) {
       toast.error(e);
@@ -647,7 +735,7 @@ class BoardStore {
     const pool = this.pool;
     if (!this.detail || !pool) return false;
     try {
-      await api.removeMember(pool.id, userId);
+      await this.write(api.removeMember(pool.id, userId));
       // Miroir local de ce que fait le serveur (évite un rechargement, et un 403 si on vient de quitter).
       if (this.detail?.pool?.id !== pool.id) return true;
       this.detail.members = this.detail.members.filter((m) => m.user_id !== userId);

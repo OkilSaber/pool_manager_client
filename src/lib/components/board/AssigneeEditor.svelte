@@ -64,6 +64,11 @@
 
   let rows = $state<Row[]>([]);
   let dirty = $state(false);
+  /**
+   * Un champ d'une ligne a le focus : la liste ne suit pas la carte (modifiée par un autre membre) sous le
+   * curseur ; elle se réaligne à la sortie du champ. Une saisie pas encore enregistrée (`dirty`) aussi.
+   */
+  let editing = $state(false);
   let syncedFor = -1;
   let timer: ReturnType<typeof setTimeout> | undefined;
 
@@ -109,6 +114,7 @@
   $effect.pre(() => {
     const id = card.id;
     const server = card.assignees;
+    const hold = dirty || editing;
     if (id !== syncedFor) {
       // Modale rouverte aussitôt sur une autre carte (contenu pas encore démonté) : la répartition
       // en attente concerne la carte précédente, on l'enregistre avant de réinitialiser.
@@ -124,8 +130,9 @@
       }
       syncedFor = id;
       dirty = false;
+      editing = false;
       rows = server.map(toRow);
-    } else if (!dirty) {
+    } else if (!hold) {
       rows = orderLike(untrack(() => $state.snapshot(rows)) as Row[], server);
     }
   });
@@ -374,6 +381,10 @@
     (e.currentTarget as HTMLElement).closest('.start')?.querySelector('input')?.focus();
   }
 
+  function onrowsfocus(e: FocusEvent) {
+    editing = e.type === 'focusin' && e.target instanceof HTMLInputElement;
+  }
+
   function flush() {
     if (timer) {
       clearTimeout(timer);
@@ -510,7 +521,7 @@
   {#if rows.length === 0}
     <p class="empty">Personne n’est assigné. Ajoutez des membres pour répartir la charge.</p>
   {:else}
-    <ul class="rows">
+    <ul class="rows" onfocusin={onrowsfocus} onfocusout={onrowsfocus}>
       {#each rows as row, i (row.user_id)}
         {@const who = name(row.user_id)}
         {@const okShare = shareOk(row.pct)}

@@ -6,6 +6,7 @@
   - « Colonnes » : éditeur des états (pool ou projet autonome ; lecture seule avec lien vers le pool
     pour un projet rattaché, dont les colonnes sont celles du pool).
   - « Types » : éditeur des types de cartes (même portée que les colonnes).
+  - « Hors ligne — reconnexion… » : temps réel coupé depuis plus de 5 s (rien quand tout va bien).
   Le sélecteur de vue utilise une liste dupliquée « active » découpée par clip-path :
   la couleur du libellé suit exactement l'indicateur pendant qu'il glisse.
 -->
@@ -21,6 +22,7 @@
   import ProjectFormDialog from '$lib/components/projects/ProjectFormDialog.svelte';
   import ProjectsDialog from '$lib/components/projects/ProjectsDialog.svelte';
   import { board } from '$lib/stores/board.svelte';
+  import { realtime } from '$lib/stores/realtime.svelte';
   import MembersDialog from './MembersDialog.svelte';
   import StatesEditor from './StatesEditor.svelte';
   import TypesEditor from './TypesEditor.svelte';
@@ -217,6 +219,12 @@
   </div>
 
   <div class="right">
+    {#if realtime.offline}
+      <span class="offline" role="status">
+        <span class="offline-dot" aria-hidden="true"></span>
+        Hors ligne — reconnexion…
+      </span>
+    {/if}
     {#if board.kind}
       <button
         class="btn btn-sm"
@@ -327,6 +335,31 @@
 
   .back {
     flex: none;
+  }
+
+  /* Temps réel coupé : discret, sans action (la reconnexion est automatique). */
+  .offline {
+    display: inline-flex;
+    align-items: center;
+    gap: 6px;
+    flex: none;
+    margin-right: 4px;
+    font-size: 12px;
+    color: var(--text-muted);
+    animation: offline-in var(--dur-pop) var(--ease-out);
+  }
+
+  .offline-dot {
+    width: 6px;
+    height: 6px;
+    border-radius: 999px;
+    background: #f59e0b;
+  }
+
+  @keyframes offline-in {
+    from {
+      opacity: 0;
+    }
   }
 
   /* ---------- Fil d'Ariane, nom, code ---------- */

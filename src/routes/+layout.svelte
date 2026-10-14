@@ -6,9 +6,10 @@
   import Spinner from '$lib/components/Spinner.svelte';
   import Toaster from '$lib/components/Toaster.svelte';
   import UpdateDialog from '$lib/components/shell/UpdateDialog.svelte';
+  import { realtime } from '$lib/stores/realtime.svelte';
   import { session } from '$lib/stores/session.svelte';
   import { updates } from '$lib/stores/updates.svelte';
-  import type { Snippet } from 'svelte';
+  import { untrack, type Snippet } from 'svelte';
 
   let { children }: { children: Snippet } = $props();
 
@@ -31,6 +32,15 @@
 
   session.init();
   updates.start();
+
+  // Temps réel : connecté tant qu'une session est ouverte ; coupé à la déconnexion et au changement de serveur
+  // (qui ferme la session).
+  const userId = $derived(session.user?.id ?? null);
+  $effect(() => {
+    if (userId == null) return;
+    untrack(() => realtime.start());
+    return () => realtime.stop();
+  });
 
   // Garde de navigation : non connecté → /login ; connecté sur login/signup → /pools.
   $effect(() => {

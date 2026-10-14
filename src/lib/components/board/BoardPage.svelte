@@ -11,6 +11,7 @@
   import Timeline from '$lib/components/timeline/Timeline.svelte';
   import { errorMessage } from '$lib/errors';
   import { board, type ScopeRef } from '$lib/stores/board.svelte';
+  import { realtime } from '$lib/stores/realtime.svelte';
   import BoardHeader, { BOARD_VIEW_PANEL_ID, type BoardView } from './BoardHeader.svelte';
   import CardModal from './CardModal.svelte';
   import KanbanBoard from './KanbanBoard.svelte';
@@ -33,6 +34,13 @@
     const target: ScopeRef = { kind, id };
     untrack(() => board.load(target));
   });
+
+  // Temps réel : on suit le tableau affiché (rien pendant un chargement ou une erreur), plus rien en quittant la page.
+  $effect(() => {
+    const target = ready ? board.ref : null;
+    untrack(() => realtime.watch(target));
+  });
+  $effect(() => () => realtime.watch(null));
 
   function setView(next: BoardView) {
     const url = new URL(page.url);

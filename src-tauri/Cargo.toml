@@ -1,6 +1,6 @@
 [package]
 name = "pool-manager"
-version = "0.5.0"
+version = "0.6.0"
 description = "Pool Manager — tableaux et chronologie"
 edition = "2021"
 
@@ -18,3 +18,4 @@ tauri-plugin-http = "2"
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 tauri-plugin-opener = "2"
+tauri-plugin-websocket = "2"
